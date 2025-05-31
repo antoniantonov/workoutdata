@@ -1,4 +1,4 @@
-# DuckDB command
+# DuckDB queries
 1. Output the maximum and average heart rate, calories burned, duration, and notes for each workout, ordered by calories burned in descending order.
 ```
 SELECT

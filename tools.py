@@ -99,7 +99,7 @@ else:
     print(f"Found {len(csv_files)} CSV file(s). Importing...\n")
 
     # Create the DuckDB connection
-    db_path = data_dir / "database.duckdb"  # Set the path to the DuckDB database
+    db_path = data_dir / "database_v2.duckdb"  # Set the path to the DuckDB database
     con = duckdb.connect(db_path)
 
     # ------------------------------------------------------------------

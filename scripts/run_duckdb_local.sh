@@ -5,8 +5,8 @@
 echo "Starting DuckDB local session..."
 
 # Configuration
-SOURCE_DB="./hr_data/database_v2.duckdb"
-WORK_DIR="./temp"
+SOURCE_DB="../hr_data/database_v2.duckdb"
+WORK_DIR="../temp"
 DB_NAME="database_v2.duckdb"
 WORK_DB="${WORK_DIR}/${DB_NAME}"
 

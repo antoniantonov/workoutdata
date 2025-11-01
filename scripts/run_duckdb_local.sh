@@ -4,9 +4,12 @@
 # Usage: ./run_duckdb_local.sh
 echo "Starting DuckDB local session..."
 
+# Resolve script directory so paths work from any invocation location
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Configuration
-SOURCE_DB="./hr_data/database_v2.duckdb"
-WORK_DIR="./temp"
+SOURCE_DB="${SCRIPT_DIR}/../hr_data/database_v2.duckdb"
+WORK_DIR="${SCRIPT_DIR}/../temp"
 DB_NAME="database_v2.duckdb"
 WORK_DB="${WORK_DIR}/${DB_NAME}"
 

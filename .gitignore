@@ -136,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Polar AccessLink tokens and secrets
+tokens_polar.json
+
 # Spyder project settings
 .spyderproject
 .spyproject

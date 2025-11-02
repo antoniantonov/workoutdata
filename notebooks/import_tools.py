@@ -11,7 +11,7 @@ The functions handle the Polar CSV format with metadata rows and time-series dat
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable
 
 import duckdb  # type: ignore
 import pandas as pd  # type: ignore

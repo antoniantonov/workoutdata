@@ -254,3 +254,93 @@ def import_workout_csv(csv_path: str, con: duckdb.DuckDBPyConnection, approved_c
                 except Exception as cleanup_error:
                     print(f"⚠️ Cleanup warning for table '{table}': {cleanup_error}")
         return 'error'
+
+
+def import_workout_from_directory(data_dir, glob_patterns):
+    """Batch-import workout CSV files from a directory into the DuckDB database."""
+
+    data_dir_path = Path(data_dir).resolve()
+
+    if isinstance(glob_patterns, (str, Path)):
+        patterns = [str(glob_patterns)]
+    else:
+        patterns = [str(pattern) for pattern in glob_patterns]
+
+    csv_paths = []
+    for pattern in patterns:
+        csv_paths.extend(sorted(data_dir_path.glob(pattern)))
+
+    # Deduplicate while preserving order
+    seen = {}
+    csv_files = [seen.setdefault(path, path) for path in csv_paths if path not in seen]
+
+    total_files = len(csv_files)
+    processed_files = 0
+    skipped_files = 0
+    error_files = 0
+
+    approved_columns = ["Sample rate", "Time", "HR (bpm)"]
+
+    if not csv_files:
+        print(f"No workout CSV files found in {data_dir_path}.")
+        return {
+            "total": total_files,
+            "processed": processed_files,
+            "skipped": skipped_files,
+            "errors": error_files,
+        }
+
+    print(f"Found {total_files} CSV file(s). Processing...\n")
+
+    db_path = data_dir_path / "database_v2.duckdb"
+    con = duckdb.connect(db_path)
+
+    try:
+        for csv_path in csv_files:
+            try:
+                result = import_workout_csv(str(csv_path), con, approved_columns=approved_columns)
+
+                if result.lower() == 'imported':
+                    processed_files += 1
+                elif result.lower() == 'skipped':
+                    skipped_files += 1
+                elif result.lower() == 'error':
+                    error_files += 1
+                else:
+                    print(f"❌ Unexpected result '{result}' from import_workout_csv for file {csv_path}")
+                    error_files += 1
+
+            except Exception as e:
+                error_files += 1
+                print(f"❌ Error processing {csv_path}: {e}")
+
+    finally:
+        con.close()
+
+    print("\n" + "="*50)
+    print("FILE PROCESSING REPORT")
+    print("="*50)
+    print(f"Total files found:     {total_files}")
+    print(f"Successfully processed: {processed_files}")
+    print(f"Skipped (duplicates):  {skipped_files}")
+    print(f"Errors encountered:    {error_files}")
+    print("="*50)
+
+    if total_files > 0:
+        success_rate = (processed_files / total_files) * 100
+        print(f"Success rate:          {success_rate:.1f}%")
+
+        if skipped_files > 0:
+            print(f"Note: {skipped_files} file(s) were skipped because they already exist in the database.")
+
+        if error_files > 0:
+            print(f"Warning: {error_files} file(s) encountered errors during processing.")
+
+    print("="*50)
+
+    return {
+        "total": total_files,
+        "processed": processed_files,
+        "skipped": skipped_files,
+        "errors": error_files,
+    }

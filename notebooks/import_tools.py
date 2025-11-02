@@ -274,8 +274,32 @@ def import_workout_from_directory(
     data_dir: str | Path,
     glob_patterns: str | Path | Iterable[str | Path]
 ) -> dict[str, int]:
-    """Batch-import workout CSV files from a directory into the DuckDB database."""
+    """
+    Batch-import workout CSV files from a directory into the DuckDB database.
 
+    Parameters
+    ----------
+    data_dir : str or Path
+        Path to the directory containing workout CSV files.
+    glob_patterns : str, Path, or Iterable[str or Path]
+        Glob pattern(s) to match CSV files (e.g., "Anton_Antonov*.CSV").
+
+    Returns
+    -------
+    dict
+        Dictionary with processing statistics:
+        {
+            "total": int,      # Total number of files found
+            "processed": int,  # Number of files successfully imported
+            "skipped": int,    # Number of files skipped (e.g., duplicates)
+            "errors": int,     # Number of files that failed to import
+        }
+
+    Exceptions
+    ----------
+    Any exceptions during import are caught internally; error details are printed,
+    and the error count is incremented in the returned dictionary.
+    """
     data_dir_path = Path(data_dir).resolve()
 
     if isinstance(glob_patterns, (str, Path)):

@@ -1,6 +1,20 @@
-import pandas as pd
-import duckdb
+"""Utility functions for importing workout CSV files into DuckDB.
+
+This module provides helpers for:
+- Deleting workout records by ID
+- Interpolating missing heart rate values
+- Importing workout CSVs with proper schema management
+- Batch importing from directories
+
+The functions handle the Polar CSV format with metadata rows and time-series data.
+"""
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Iterable, Optional
+
+import duckdb  # type: ignore
+import pandas as pd  # type: ignore
 
 def delete_workout_by_id(db_path: str, workout_id: str):
     """

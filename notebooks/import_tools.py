@@ -288,8 +288,7 @@ def import_workout_from_directory(
         csv_paths.extend(sorted(data_dir_path.glob(pattern)))
 
     # Deduplicate while preserving order
-    seen = {}
-    csv_files = [seen.setdefault(path, path) for path in csv_paths if path not in seen]
+    csv_files = list(dict.fromkeys(csv_paths))
 
     total_files = len(csv_files)
     processed_files = 0

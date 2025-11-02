@@ -270,7 +270,10 @@ def import_workout_csv(csv_path: str, con: duckdb.DuckDBPyConnection, approved_c
         return 'error'
 
 
-def import_workout_from_directory(data_dir, glob_patterns):
+def import_workout_from_directory(
+    data_dir: str | Path,
+    glob_patterns: str | Path | Iterable[str | Path]
+) -> dict[str, int]:
     """Batch-import workout CSV files from a directory into the DuckDB database."""
 
     data_dir_path = Path(data_dir).resolve()

@@ -144,7 +144,7 @@ def fix_missing_hr(df):
     
     return df_fixed
 
-def import_workout_csv(csv_path: str, con: duckdb.DuckDBPyConnection, approved_columns=None):
+def import_workout_csv(csv_path: str, con: duckdb.DuckDBPyConnection, approved_columns: Optional[Iterable[str]] = None):
     """
     Import workout CSV file into DuckDB database using the provided connection.
 

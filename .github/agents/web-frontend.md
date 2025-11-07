@@ -166,14 +166,24 @@ export const WorkoutChart: React.FC<WorkoutChartProps> = ({
   height = 500,
 }) => {
   const traces = useMemo(() => {
-    return workouts.map((workout) => ({
-      x: workout.data.map(d => d.time),
-      y: workout.data.map(d => d.hr),
-      type: 'scatter',
-      mode: 'lines',
-      name: workout.workoutId,
-      hovertemplate: '<b>%{y} bpm</b><br>Time: %{x}s<extra></extra>',
-    }));
+    return workouts.map((workout) => {
+      // Single-pass extraction for better performance
+      const x: number[] = [];
+      const y: number[] = [];
+      workout.data.forEach(d => {
+        x.push(d.time);
+        y.push(d.hr);
+      });
+      
+      return {
+        x,
+        y,
+        type: 'scatter',
+        mode: 'lines',
+        name: workout.workoutId,
+        hovertemplate: '<b>%{y} bpm</b><br>Time: %{x}s<extra></extra>',
+      };
+    });
   }, [workouts]);
 
   const zoneShapes = useMemo(() => {
@@ -342,7 +352,13 @@ function downsampleData(data: TimeSeriesPoint[], maxPoints: number = 1000): Time
   if (data.length <= maxPoints) return data;
   
   const step = Math.ceil(data.length / maxPoints);
-  return data.filter((_, index) => index % step === 0);
+  const result: TimeSeriesPoint[] = [];
+  
+  for (let i = 0; i < data.length; i += step) {
+    result.push(data[i]);
+  }
+  
+  return result;
 }
 
 // Use with useMemo

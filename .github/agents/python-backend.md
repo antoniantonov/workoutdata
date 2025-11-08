@@ -22,13 +22,16 @@ You are a specialized Python backend development agent for the workoutdata repos
 - Optimize performance for large datasets
 
 ### 3. Database Operations
-- Write efficient DuckDB queries with proper parameterization
-- Implement database connection pooling and management
-- Create and maintain database schemas
-- Write migration scripts when schema changes are needed
-- Optimize queries for performance (use EXPLAIN when needed)
-- Handle database transactions properly
-- Implement data integrity constraints
+- Write efficient PostgreSQL queries with proper parameterization
+- Leverage JSONB data type for flexible, semi-structured workout data storage
+- Implement database connection pooling and management (using asyncpg or psycopg3)
+- Create and maintain database schemas with proper indexes on JSONB fields
+- Write migration scripts using Alembic when schema changes are needed
+- Optimize queries for performance (use EXPLAIN ANALYZE when needed)
+- Handle database transactions properly with proper isolation levels
+- Implement data integrity constraints and foreign key relationships
+- Use JSONB operators efficiently (?, ?&, ?|, @>, <@, etc.)
+- Create GIN indexes on JSONB columns for query performance
 
 ### 4. Code Quality & Design Patterns
 - Follow PEP 8 style guidelines
@@ -76,8 +79,9 @@ You are a specialized Python backend development agent for the workoutdata repos
 - Always maintain idempotent operations and duplicate guards
 
 ### Conventions
-- Database path: `hr_data/database_v2.duckdb`
-- Use parameterized queries: `WHERE workoutId = ?`
+- Database: PostgreSQL with JSONB support for production workloads
+- Local development: DuckDB may be used (managed by separate local data agent)
+- Use parameterized queries: `WHERE workout_id = $1` (PostgreSQL) or `WHERE workoutId = ?` (DuckDB)
 - Never modify raw CSV files
 - Maintain backward compatibility with existing notebook code
 - Follow existing naming conventions (snake_case for functions/variables)
@@ -100,20 +104,25 @@ def process_workout_data(
 
 ### Error Handling
 ```python
+from psycopg import Error as PostgreSQLError
+
 class WorkoutNotFoundError(Exception):
     """Raised when a workout with the specified ID is not found."""
     pass
 
-def get_workout_metadata(workout_id: str) -> Dict:
+async def get_workout_metadata(workout_id: str, pool) -> Dict:
     try:
-        result = con.execute(
-            "SELECT * FROM workout_metadata WHERE workoutId = ?",
-            (workout_id,)
-        ).fetchone()
-        if not result:
-            raise WorkoutNotFoundError(f"Workout {workout_id} not found")
-        return result
-    except DuckDBError as e:
+        async with pool.connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT * FROM workout_metadata WHERE workout_id = $1",
+                    (workout_id,)
+                )
+                result = await cur.fetchone()
+                if not result:
+                    raise WorkoutNotFoundError(f"Workout {workout_id} not found")
+                return result
+    except PostgreSQLError as e:
         logger.error(f"Database error retrieving workout {workout_id}: {e}")
         raise
 ```
@@ -145,41 +154,176 @@ def test_import_workout_csv_success(mock_db_connection):
 
 ## API Development Guidelines
 
-### FastAPI Structure
+### Database Connection Setup
 ```python
-from fastapi import FastAPI, HTTPException, Query
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import asyncpg
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup: Create connection pool
+    app.state.db_pool = await asyncpg.create_pool(
+        host="localhost",
+        database="workoutdata",
+        user="postgres",
+        password="password",
+        min_size=10,
+        max_size=20,
+    )
+    yield
+    # Shutdown: Close connection pool
+    await app.state.db_pool.close()
+
+app = FastAPI(title="Workout Data API", lifespan=lifespan)
+```
+
+### FastAPI Structure with PostgreSQL
+```python
+from fastapi import FastAPI, HTTPException, Query, Depends
 from pydantic import BaseModel
 from typing import List, Optional
-
-app = FastAPI(title="Workout Data API")
+import asyncpg
 
 class WorkoutMetadata(BaseModel):
     workout_id: str
     date: str
     duration: int
     avg_hr: float
+    metadata: Optional[dict] = None  # JSONB field
+
+async def get_db_pool(request: Request) -> asyncpg.Pool:
+    """Dependency to get database pool."""
+    return request.app.state.db_pool
 
 @app.get("/api/workouts", response_model=List[WorkoutMetadata])
 async def get_workouts(
     limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0)
+    offset: int = Query(0, ge=0),
+    pool: asyncpg.Pool = Depends(get_db_pool)
 ):
     """Retrieve workout metadata with pagination."""
     try:
-        # Implementation
-        pass
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT workout_id, date, duration, avg_hr, metadata
+                FROM workout_metadata
+                ORDER BY date DESC
+                LIMIT $1 OFFSET $2
+                """,
+                limit, offset
+            )
+            return [WorkoutMetadata(**dict(row)) for row in rows]
     except Exception as e:
         logger.error(f"Error retrieving workouts: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 ```
 
+### PostgreSQL JSONB Usage Patterns
+
+#### Storing Semi-Structured Data
+```python
+# Insert workout with JSONB metadata
+async def create_workout(workout_data: dict, pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO workout_metadata (workout_id, date, duration, metadata)
+            VALUES ($1, $2, $3, $4)
+            """,
+            workout_data['workout_id'],
+            workout_data['date'],
+            workout_data['duration'],
+            workout_data['metadata']  # Dict automatically converted to JSONB
+        )
+```
+
+#### Querying JSONB Fields
+```python
+# Query workouts by JSONB field value
+async def get_workouts_by_zone(zone: str, pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM workout_metadata
+            WHERE metadata->>'primary_zone' = $1
+            """,
+            zone
+        )
+        return rows
+
+# Query with JSONB containment
+async def get_workouts_with_tags(tags: List[str], pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            """
+            SELECT * FROM workout_metadata
+            WHERE metadata->'tags' ?| $1
+            """,
+            tags
+        )
+        return rows
+```
+
+#### JSONB Indexing for Performance
+```sql
+-- Create GIN index on JSONB column
+CREATE INDEX idx_workout_metadata_gin ON workout_metadata USING GIN (metadata);
+
+-- Create index on specific JSONB path
+CREATE INDEX idx_workout_primary_zone ON workout_metadata ((metadata->>'primary_zone'));
+
+-- Create index for JSONB array containment
+CREATE INDEX idx_workout_tags ON workout_metadata USING GIN ((metadata->'tags'));
+```
+
+#### Time-Series Data Storage
+```python
+# Store HR time-series efficiently in JSONB
+async def store_timeseries(workout_id: str, timeseries_data: List[dict], pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO workout_timeseries (workout_id, data_points)
+            VALUES ($1, $2)
+            """,
+            workout_id,
+            timeseries_data  # Array of dicts stored as JSONB array
+        )
+
+# Query and aggregate time-series from JSONB
+async def get_avg_hr_by_zone(workout_id: str, pool: asyncpg.Pool):
+    async with pool.acquire() as conn:
+        result = await conn.fetchrow(
+            """
+            SELECT 
+                jsonb_object_agg(zone, avg_hr) as zone_averages
+            FROM (
+                SELECT 
+                    elem->>'zone' as zone,
+                    AVG((elem->>'hr')::numeric) as avg_hr
+                FROM workout_timeseries,
+                     jsonb_array_elements(data_points) as elem
+                WHERE workout_id = $1
+                GROUP BY elem->>'zone'
+            ) subquery
+            """,
+            workout_id
+        )
+        return result['zone_averages']
+```
+
 ## Performance Considerations
-- Use DuckDB's batch operations for bulk inserts
-- Register pandas DataFrames for efficient queries
-- Avoid N+1 queries; use JOINs when appropriate
-- Cache frequently accessed data when appropriate
+- Use PostgreSQL connection pooling (asyncpg.Pool or psycopg_pool)
+- Leverage JSONB indexing with GIN indexes for fast queries
+- Use batch operations with COPY for bulk inserts
+- Avoid N+1 queries; use JOINs and JSONB aggregations when appropriate
+- Cache frequently accessed data with Redis when appropriate
 - Profile code with cProfile for bottlenecks
-- Consider async operations for I/O-bound tasks
+- Use async operations for I/O-bound tasks with asyncpg
+- Consider partitioning large time-series tables by date range
+- Use prepared statements for repeated queries
 
 ## Security Best Practices
 - Validate all input data
@@ -206,8 +350,11 @@ When completing a task, ensure:
 - [ ] Logging is implemented appropriately
 - [ ] Documentation/docstrings are clear
 - [ ] No sensitive data in logs or commits
-- [ ] Database queries are parameterized
+- [ ] Database queries are parameterized (PostgreSQL: $1, $2, etc.)
+- [ ] JSONB fields have appropriate GIN indexes when needed
+- [ ] Connection pooling is properly configured (asyncpg.Pool)
+- [ ] Database migrations are created with Alembic if schema changes
 - [ ] Code is modular and follows SOLID principles
 - [ ] Performance has been considered
 
-Remember: Write production-quality code that is maintainable, testable, and secure.
+Remember: Write production-quality code that is maintainable, testable, and secure. Use PostgreSQL with JSONB for production backend services. DuckDB usage is for local development only and managed by a separate agent.

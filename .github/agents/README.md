@@ -10,18 +10,21 @@ This directory contains instruction files for specialized GitHub Copilot agents 
 **Use when**:
 - Creating or modifying backend API endpoints
 - Implementing data processing pipelines
-- Working with DuckDB database operations
+- Working with PostgreSQL database operations (JSONB support)
 - Writing Python tests and improving code quality
 - Refactoring Python code with design patterns
 - Implementing authentication or business logic
 
 **Key capabilities**:
 - FastAPI/Flask API development
-- DuckDB query optimization
+- PostgreSQL query optimization with JSONB
+- Async database operations (asyncpg)
 - Pandas data transformations
 - Unit and integration testing with pytest
 - Type hints and code documentation
 - Error handling and logging best practices
+
+**Note**: DuckDB is used only for local development and is managed by a separate local data agent.
 
 ### 2. Web Frontend Agent (`web-frontend.md`)
 **Expertise**: Interactive web UI development and data visualization
@@ -49,9 +52,13 @@ Based on the repository requirements, the following technology stack is recommen
 ### Backend
 - **Python 3.9+** - Main language for data processing
 - **FastAPI** - Modern, fast API framework with automatic OpenAPI docs
-- **DuckDB** - In-process analytical database (already in use)
+- **PostgreSQL** - Production database with JSONB support for flexible data storage
+- **asyncpg** - High-performance async PostgreSQL driver
+- **Alembic** - Database migration tool
 - **Pandas** - Data manipulation and analysis (already in use)
 - **Pytest** - Testing framework
+
+**Note**: DuckDB is available for local development and exploratory data analysis, but is not used in production backend services.
 
 ### Frontend
 - **React 18+** - Component-based UI library
@@ -63,13 +70,15 @@ Based on the repository requirements, the following technology stack is recommen
 
 ### Why This Stack?
 
-1. **Plotly.js**: Maintains consistency with existing Jupyter notebook visualizations while providing rich interactive features (zoom, pan, hover, export)
+1. **PostgreSQL with JSONB**: Production-grade relational database with flexible semi-structured data support via JSONB. Excellent for time-series workout data with varying metadata while maintaining ACID guarantees.
 
-2. **React + TypeScript**: Industry-standard combination for building maintainable, type-safe web applications with excellent developer experience
+2. **Plotly.js**: Maintains consistency with existing Jupyter notebook visualizations while providing rich interactive features (zoom, pan, hover, export)
 
-3. **Vite**: Significantly faster than Create React App, with better performance and modern tooling
+3. **React + TypeScript**: Industry-standard combination for building maintainable, type-safe web applications with excellent developer experience
 
-4. **FastAPI**: High-performance Python framework with automatic API documentation and type validation
+4. **Vite**: Significantly faster than Create React App, with better performance and modern tooling
+
+5. **FastAPI + asyncpg**: High-performance async Python framework with automatic API documentation and type validation, paired with the fastest PostgreSQL driver
 
 ## How to Use Custom Agents
 

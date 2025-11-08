@@ -59,7 +59,7 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
 - **Notebooks**:
   - `populate_duckdb.ipynb` – demonstrates importing workouts using import_tools.py.
   - `hr-plotting-v0.2.ipynb` – Plotly visualization functions (line plots with zones, pie charts).
-  - `hr-plotting-v0.1.ipynb` – earlier plotting version.
+  - `hr-plotting-v0.1.ipynb` – **DEPRECATED**: Do not use or modify. Kept only for educational purposes for human developers.
   - `calories_calculator.ipynb` – calorie-related analysis.
   - `polar_accesslink_workflow.ipynb` – Polar AccessLink API integration.
 - **Scripts**:

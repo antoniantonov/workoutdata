@@ -1101,7 +1101,7 @@ def download_exercise_tcx(
     finally:
         # Clean up temporary TCX file
         if temp_tcx_path.exists():
-            # temp_tcx_path.unlink()
+            temp_tcx_path.unlink()
             print(f"✓ Cleaned up temporary TCX file")
 
 

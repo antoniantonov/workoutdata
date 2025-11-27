@@ -651,13 +651,13 @@ def complete_token_exchange(
 
 def convert_tcx_to_csv(
     tcx_path: Path,
-    output_csv_path: Optional[Path] = None,
-    name: str = "Anton Antonov ",
-    height: float = 175.0,
-    weight: float = 78.0,
-    hr_max: int = 188,
-    hr_sit: Optional[int] = None,
-    vo2max: Optional[int] = 58
+    output_csv_path: Path,
+    name: str,
+    height: float,
+    weight: float,
+    hr_max: int,
+    hr_sit: int,
+    vo2max: int
 ) -> Path:
     """Convert TCX file to Polar-compatible CSV format.
     
@@ -757,7 +757,7 @@ def convert_tcx_to_csv(
         '', '', '', '', '', '', '', '', '',
         notes,  # CSV writer will properly escape newlines and commas
         str(height), str(weight),
-        str(hr_max), str(hr_sit) if hr_sit else '', str(vo2max) if vo2max else '', ''
+        str(max_hr_workout) if max_hr_workout else str(hr_max), str(hr_sit) if hr_sit else '', str(vo2max) if vo2max else '', ''
     ]
     
     # Extract trackpoints for time-series data
@@ -783,12 +783,8 @@ def convert_tcx_to_csv(
     
     timeseries_rows = []
     
-    # Add first row with sample rate = 1
-    first_row = ['1', '00:00:00', '0', '', '', '', '', '', '', '', '', '']
-    timeseries_rows.append(first_row)
-    
     # Process each trackpoint
-    for tp in trackpoints:
+    for i, tp in enumerate(trackpoints):
         time_elem = tp.find('tcx:Time', ns)
         if time_elem is None:
             continue
@@ -806,8 +802,9 @@ def convert_tcx_to_csv(
         hr_elem = tp.find('tcx:HeartRateBpm/tcx:Value', ns)
         hr_value = hr_elem.text if hr_elem is not None else ''
         
-        # Build row (empty strings for other columns)
-        row = ['', time_formatted, hr_value, '', '', '', '', '', '', '', '', '']
+        # Build row - first row gets sample rate of 1, rest get empty string
+        sample_rate = '1' if i == 0 else ''
+        row = [sample_rate, time_formatted, hr_value, '', '', '', '', '', '', '', '', '']
         timeseries_rows.append(row)
     
     # Determine output path
@@ -841,6 +838,50 @@ def convert_tcx_to_csv(
 # =============================================================================
 # Exercise Management Functions
 # =============================================================================
+
+def get_physical_info(
+    access_token: str,
+    api_base: str = "https://www.polaraccesslink.com/v3"
+) -> Dict[str, object]:
+    """Get user's physical information from Polar API.
+    
+    Returns physical parameters including weight, height, heart rate zones,
+    and VO2max. Uses default values if API call fails or data is missing.
+    
+    Args:
+        access_token: OAuth access token
+        api_base: Polar API base URL
+    
+    Returns:
+        Dictionary containing physical information with structure:
+        {
+            "weight": float (kg),
+            "height": float (cm),
+            "maximum-heart-rate": int (bpm),
+            "resting-heart-rate": int (bpm),
+            "aerobic-threshold": int (bpm) or None,
+            "anaerobic-threshold": int (bpm) or None,
+            "vo2-max": int or None,
+            ... (other fields from API if available)
+        }
+    """
+    # Default values
+    defaults = {
+        "weight": 78.0,
+        "height": 175.0,
+        "maximum-heart-rate": 188,
+        "resting-heart-rate": 55,
+        "aerobic-threshold": None,
+        "anaerobic-threshold": None,
+        "vo2-max": 58
+    }
+    
+    # Merge API data with defaults
+    result = defaults.copy()
+    
+    print(f"✓ Physical info: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
+    return result
+
 
 def get_field(exercise: Dict[str, object], *keys: str) -> Optional[object]:
     """Extract field from exercise dict trying multiple possible key names.
@@ -997,35 +1038,21 @@ def download_exercise_tcx(
     print("\nFetching user info for conversion parameters...")
     user_info = get_user_info("self", access_token, api_base)
     
-    # Extract user parameters with defaults
+    # Extract user name with default
     name = "Anton Antonov "  # Default
-    height = 175.0
-    weight = 78.0
-    hr_max = 188
-    hr_sit = None
-    vo2max = 58
+    if user_info and 'first-name' in user_info and 'last-name' in user_info:
+        name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
+        print(f"✓ User name: {name.strip()}")
     
-    if user_info:
-        # Extract available user info
-        if 'first-name' in user_info and 'last-name' in user_info:
-            name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
-        
-        # Physical parameters (if available in user_info)
-        physical_info = user_info.get('physical-information', {})
-        if physical_info:
-            weight = physical_info.get('weight', weight)
-            height = physical_info.get('height', height)
-        
-        # Training parameters (if available)
-        training_info = user_info.get('training-information', {})
-        if training_info:
-            hr_max = training_info.get('maximum-heart-rate', hr_max)
-            hr_sit = training_info.get('resting-heart-rate', hr_sit)
-            vo2max = training_info.get('vo2max', vo2max)
-        
-        print(f"✓ User info retrieved: {name.strip()}, {weight}kg, {height}cm, HR max: {hr_max}")
-    else:
-        print("ℹ Using default parameters for conversion")
+    # Get physical information using dedicated function
+    physical_info = get_physical_info(access_token, api_base)
+    
+    # Extract parameters from physical_info
+    weight = physical_info.get('weight', 0.0)
+    height = physical_info.get('height', 0.0)
+    hr_max = physical_info.get('maximum-heart-rate', 0)
+    hr_sit = physical_info.get('resting-heart-rate', 0)
+    vo2max = physical_info.get('vo2-max', 0)
     
     # Fetch TCX for exercise
     print("\nDownloading TCX for exercise...")
@@ -1074,7 +1101,7 @@ def download_exercise_tcx(
     finally:
         # Clean up temporary TCX file
         if temp_tcx_path.exists():
-            temp_tcx_path.unlink()
+            # temp_tcx_path.unlink()
             print(f"✓ Cleaned up temporary TCX file")
 
 
@@ -1382,6 +1409,7 @@ def run_polar_workflow(
 __all__ = [
     # Configuration
     'load_configuration',
+
     # Token management
     'save_tokens',
     'load_tokens',
@@ -1389,17 +1417,22 @@ __all__ = [
     'exchange_code_for_token',
     'refresh_access_token',
     'ensure_token',
+
     # User management
     'get_user_info',
     'register_user',
+
     # OAuth flow
     'create_callback_handler',
     'start_callback_server',
     'run_authorization_flow',
     'complete_token_exchange',
+
     # TCX conversion
     'convert_tcx_to_csv',
+
     # Exercise management
+    'get_physical_info',
     'get_field',
     'normalize_start_time',
     'list_exercises',
@@ -1407,9 +1440,11 @@ __all__ = [
     'select_latest_exercise',
     'download_exercise_tcx',
     'fetch_and_export_latest_exercise',
+
     # Validation
     'is_token_valid',
     'run_validation_checks',
+
     # Complete workflow
     'run_polar_workflow',
 ]

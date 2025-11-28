@@ -840,15 +840,18 @@ def convert_tcx_to_csv(
 # =============================================================================
 
 def get_physical_info(
+    polar_user_id: int,
     access_token: str,
     api_base: str = "https://www.polaraccesslink.com/v3"
 ) -> Dict[str, object]:
     """Get user's physical information from Polar API.
     
     Returns physical parameters including weight, height, heart rate zones,
-    and VO2max. Uses default values if API call fails or data is missing.
+    and VO2max. Fetches data from Polar API using transaction-based workflow.
+    Falls back to default values if API call fails or data is missing.
     
     Args:
+        polar_user_id: Polar user ID
         access_token: OAuth access token
         api_base: Polar API base URL
     
@@ -865,7 +868,7 @@ def get_physical_info(
             ... (other fields from API if available)
         }
     """
-    # Default values
+    # Default values (fallback)
     defaults = {
         "weight": 78.0,
         "height": 175.0,
@@ -876,11 +879,100 @@ def get_physical_info(
         "vo2-max": 58
     }
     
-    # Merge API data with defaults
-    result = defaults.copy()
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
     
-    print(f"✓ Physical info: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
-    return result
+    try:
+        # Step 1: Create physical info transaction
+        print(f"Creating physical info transaction for user {polar_user_id}...")
+        transaction_url = f"{api_base}/users/{polar_user_id}/physical-information-transactions"
+        transaction_resp = requests.post(transaction_url, headers=headers)
+        
+        if transaction_resp.status_code == 204:
+            print("ℹ No new physical info data available, using defaults")
+            return defaults
+        
+        if transaction_resp.status_code != 201:
+            print(f"⚠ Transaction creation failed: {transaction_resp.status_code}")
+            print(f"  Using default values")
+            return defaults
+        
+        transaction_data = transaction_resp.json()
+        transaction_id = transaction_data.get('transaction-id')
+        
+        if not transaction_id:
+            print("⚠ No transaction ID received, using defaults")
+            return defaults
+        
+        # Step 2: List physical infos in transaction
+        print(f"Listing physical infos in transaction {transaction_id}...")
+        list_url = f"{api_base}/users/{polar_user_id}/physical-information-transactions/{transaction_id}"
+        list_resp = requests.get(list_url, headers=headers)
+        
+        if list_resp.status_code != 200:
+            print(f"⚠ Could not list physical infos: {list_resp.status_code}")
+            # Try to commit transaction before returning
+            requests.put(list_url, headers=headers)
+            return defaults
+        
+        list_data = list_resp.json()
+        physical_info_urls = list_data.get('physical-informations', [])
+        print(f"✓ Found {len(physical_info_urls)} physical info record(s) in transaction")
+        
+        if not physical_info_urls:
+            print("ℹ No physical infos found in transaction")
+            # Commit transaction before returning
+            requests.put(list_url, headers=headers)
+            return defaults
+        
+        # Step 3: Get the newest physical info (last in list)
+        # Physical infos are ordered by creation date, newest last
+        newest_info_url = physical_info_urls[-1]
+        print(f"Fetching newest physical info...")
+        
+        info_resp = requests.get(newest_info_url, headers=headers)
+        
+        if info_resp.status_code != 200:
+            print(f"⚠ Could not fetch physical info: {info_resp.status_code}")
+            # Commit transaction before returning
+            requests.put(list_url, headers=headers)
+            return defaults
+        
+        physical_info = info_resp.json()
+        
+        # Step 4: Commit transaction
+        print("Committing physical info transaction...")
+        commit_resp = requests.put(list_url, headers=headers)
+        
+        if commit_resp.status_code != 200:
+            print(f"⚠ Transaction commit failed: {commit_resp.status_code}")
+        else:
+            print("✓ Transaction committed successfully")
+        
+        # Extract values from API response, using defaults as fallback
+        result = {
+            "weight": physical_info.get('weight', defaults['weight']),
+            "height": physical_info.get('height', defaults['height']),
+            "maximum-heart-rate": physical_info.get('maximum-heart-rate', defaults['maximum-heart-rate']),
+            "resting-heart-rate": physical_info.get('resting-heart-rate', defaults['resting-heart-rate']),
+            "aerobic-threshold": physical_info.get('aerobic-threshold', defaults['aerobic-threshold']),
+            "anaerobic-threshold": physical_info.get('anaerobic-threshold', defaults['anaerobic-threshold']),
+            "vo2-max": physical_info.get('vo2-max', defaults['vo2-max'])
+        }
+        
+        print(f"✓ Physical info from API: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
+        return result
+        
+    except requests.exceptions.RequestException as e:
+        print(f"⚠ API request failed: {e}")
+        print("  Using default values")
+        return defaults
+    except Exception as e:
+        print(f"⚠ Unexpected error fetching physical info: {e}")
+        print("  Using default values")
+        return defaults
 
 
 def get_field(exercise: Dict[str, object], *keys: str) -> Optional[object]:
@@ -1011,6 +1103,7 @@ def select_latest_exercise(exercises: List[Dict[str, object]]) -> Optional[Dict[
 
 def download_exercise_tcx(
     exercise_id: str,
+    polar_user_id: int,
     access_token: str,
     output_dir: Path = Path("hr_data"),
     api_base: str = "https://www.polaraccesslink.com/v3"
@@ -1022,6 +1115,7 @@ def download_exercise_tcx(
     
     Args:
         exercise_id: Exercise ID to download
+        polar_user_id: Polar user ID
         access_token: OAuth access token
         output_dir: Directory to save CSV output
         api_base: Polar API base URL
@@ -1036,7 +1130,7 @@ def download_exercise_tcx(
     
     # Fetch user info to get parameters for CSV conversion
     print("\nFetching user info for conversion parameters...")
-    user_info = get_user_info("self", access_token, api_base)
+    user_info = get_user_info(polar_user_id, access_token, api_base)
     
     # Extract user name with default
     name = "Anton Antonov "  # Default
@@ -1045,7 +1139,7 @@ def download_exercise_tcx(
         print(f"✓ User name: {name.strip()}")
     
     # Get physical information using dedicated function
-    physical_info = get_physical_info(access_token, api_base)
+    physical_info = get_physical_info(polar_user_id, access_token, api_base)
     
     # Extract parameters from physical_info
     weight = physical_info.get('weight', 0.0)
@@ -1143,7 +1237,7 @@ def fetch_and_export_latest_exercise(
     exercise_id = get_field(latest, 'id', 'exercise_id')
     
     # Download TCX
-    download_exercise_tcx(exercise_id, access_token, output_dir, api_base)
+    download_exercise_tcx(exercise_id, polar_user_id, access_token, output_dir, api_base)
     
     print("\n" + "="*80)
     print("EXERCISE FETCH (NEW API) COMPLETE")
@@ -1384,6 +1478,7 @@ def run_polar_workflow(
             # Download TCX
             tcx_dataframe = download_exercise_tcx(
                 exercise_id=exercise_id,
+                polar_user_id=polar_user_id,
                 access_token=access_token,
                 output_dir=output_dir,
                 api_base=config['API_BASE']

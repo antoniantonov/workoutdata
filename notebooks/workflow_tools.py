@@ -17,93 +17,23 @@ import json
 import os
 import secrets
 import threading
-import webbrowser
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from io import BytesIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
+import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 import requests  # type: ignore
+
+from config import load_configuration
 
 # =============================================================================
 # Configuration and Constants
 # =============================================================================
-
-def load_configuration() -> Dict[str, object]:
-    """Load configuration from environment variables.
-    
-    Loads Polar API configuration including client credentials, redirect port,
-    and member ID from environment variables. Optionally loads from .env file
-    if python-dotenv is available.
-    
-    Returns:
-        Dict containing:
-            - CLIENT_ID: Polar API client ID
-            - CLIENT_SECRET: Polar API client secret
-            - REDIRECT_PORT: Port for OAuth callback (default: 5000)
-            - MEMBER_ID: Optional Polar member ID
-            - AUTH_URL: Polar authorization URL
-            - TOKEN_URL: Polar token exchange URL
-            - API_BASE: Polar API base URL
-            - TOKENS_FILE: Path to token storage file
-            - ALLOW_PORT_FALLBACK: Whether to try alternative ports
-    
-    Raises:
-        ValueError: If required environment variables are missing
-    """
-    # Optional: Load from .env file if python-dotenv is available
-    try:
-        from dotenv import load_dotenv  # type: ignore
-        load_dotenv()
-        print("✓ Loaded environment from .env file")
-    except ImportError:
-        print("ℹ python-dotenv not installed, using system environment variables")
-
-    # Load configuration from environment variables
-    CLIENT_ID = os.getenv('POLAR_CLIENT_ID')
-    CLIENT_SECRET = os.getenv('POLAR_CLIENT_SECRET')
-    REDIRECT_PORT = int(os.getenv('POLAR_REDIRECT_PORT', '5000'))
-    MEMBER_ID = os.getenv('POLAR_MEMBER_ID')
-    ALLOW_PORT_FALLBACK = os.getenv('ALLOW_PORT_FALLBACK', 'true').lower() == 'true'
-
-    # Validate required environment variables
-    missing_vars = []
-    if not CLIENT_ID:
-        missing_vars.append('POLAR_CLIENT_ID')
-    if not CLIENT_SECRET:
-        missing_vars.append('POLAR_CLIENT_SECRET')
-
-    if missing_vars:
-        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
-
-    print(f"✓ Configuration loaded")
-    print(f"  - Client ID: {CLIENT_ID[:8]}...")
-    print(f"  - Redirect Port: {REDIRECT_PORT}")
-    print(f"  - Member ID: {MEMBER_ID if MEMBER_ID else 'Not set (will be obtained)'}")
-
-    # API endpoints
-    AUTH_URL = "https://flow.polar.com/oauth2/authorization"
-    TOKEN_URL = "https://polarremote.com/v2/oauth2/token"
-    API_BASE = "https://www.polaraccesslink.com/v3"
-
-    # Token storage file
-    TOKENS_FILE = Path("tokens_polar.json")
-
-    return {
-        'CLIENT_ID': CLIENT_ID,
-        'CLIENT_SECRET': CLIENT_SECRET,
-        'REDIRECT_PORT': REDIRECT_PORT,
-        'MEMBER_ID': MEMBER_ID,
-        'AUTH_URL': AUTH_URL,
-        'TOKEN_URL': TOKEN_URL,
-        'API_BASE': API_BASE,
-        'TOKENS_FILE': TOKENS_FILE,
-        'ALLOW_PORT_FALLBACK': ALLOW_PORT_FALLBACK,
-    }
+# load_configuration is now imported from config.py module
 
 
 # =============================================================================
@@ -278,13 +208,133 @@ def ensure_token(tokens_file: Path = Path("tokens_polar.json")) -> Optional[str]
 
 
 # =============================================================================
+# User Info Database Management
+# =============================================================================
+
+def ensure_userinfo_table(db_path: Path) -> None:
+    """Ensure the userinfo table exists in the database.
+    
+    Creates the userinfo table with schema for storing user profile information
+    from both get_user_info and get_physical_info API calls.
+    
+    Args:
+        db_path: Path to DuckDB database file
+    """
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS userinfo (
+            polar_user_id INTEGER PRIMARY KEY,
+            first_name VARCHAR,
+            last_name VARCHAR,
+            birthdate VARCHAR,
+            gender VARCHAR,
+            weight FLOAT,
+            height FLOAT,
+            maximum_heart_rate INTEGER,
+            resting_heart_rate INTEGER,
+            aerobic_threshold INTEGER,
+            anaerobic_threshold INTEGER,
+            vo2_max FLOAT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        print("✓ Userinfo table ensured")
+    finally:
+        con.close()
+
+
+def get_userinfo_from_db(db_path: Path, polar_user_id: int) -> Optional[Dict[str, object]]:
+    """Retrieve user info from database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+        polar_user_id: Polar user ID
+    
+    Returns:
+        Dictionary with user info, or None if not found
+    """
+    con = duckdb.connect(str(db_path))
+    try:
+        result = con.execute(
+            "SELECT * FROM userinfo WHERE polar_user_id = ?",
+            (polar_user_id,)
+        ).fetchone()
+        
+        if result:
+            columns = [desc[0] for desc in con.description]
+            return dict(zip(columns, result))
+        return None
+    except Exception as e:
+        print(f"⚠ Error reading from userinfo table: {e}")
+        return None
+    finally:
+        con.close()
+
+
+def save_userinfo_to_db(db_path: Path, user_data: Dict[str, object]) -> None:
+    """Save or update user info in database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+        user_data: Dictionary with user information (must include polar_user_id)
+    """
+    if 'polar_user_id' not in user_data:
+        print("⚠ Cannot save userinfo: polar_user_id missing")
+        return
+    
+    ensure_userinfo_table(db_path)
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        # Upsert: Delete old record if exists, then insert new
+        con.execute(
+            "DELETE FROM userinfo WHERE polar_user_id = ?",
+            (user_data['polar_user_id'],)
+        )
+        
+        # Build insert statement dynamically based on available fields
+        fields = list(user_data.keys())
+        placeholders = ', '.join(['?' for _ in fields])
+        field_names = ', '.join(fields)
+        
+        con.execute(
+            f"INSERT INTO userinfo ({field_names}, last_updated) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
+            tuple(user_data[f] for f in fields)
+        )
+        print(f"✓ Userinfo saved to database for user {user_data['polar_user_id']}")
+    except Exception as e:
+        print(f"⚠ Error saving to userinfo table: {e}")
+    finally:
+        con.close()
+
+
+def get_default_physical_info() -> Dict[str, object]:
+    """Get hardcoded default physical info values.
+    
+    Returns:
+        Dictionary with default physical information
+    """
+    return {
+        'weight': 78.0,
+        'height': 175.0,
+        'maximum_heart_rate': 188,
+        'resting_heart_rate': 55,
+        'aerobic_threshold': 140,
+        'anaerobic_threshold': 165,
+        'vo2_max': 58.0
+    }
+
+
+# =============================================================================
 # User Management Functions
 # =============================================================================
 
 def get_user_info(
     member_or_user_id: str,
     access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3"
+    api_base: str = "https://www.polaraccesslink.com/v3",
+    db_path: Optional[Path] = None
 ) -> Optional[Dict[str, object]]:
     """Fetch user info from Polar API to get polar-user-id.
     
@@ -292,6 +342,7 @@ def get_user_info(
         member_or_user_id: Member ID or user ID to fetch info for
         access_token: OAuth access token
         api_base: Polar API base URL
+        db_path: Optional path to DuckDB database for saving user info
     
     Returns:
         Dictionary containing user info, or None if request fails
@@ -308,6 +359,20 @@ def get_user_info(
     if response.status_code == 200:
         user_info = response.json()
         print(f"✓ User info retrieved")
+        
+        # Save to database if db_path provided
+        if db_path and 'polar-user-id' in user_info:
+            user_data = {
+                'polar_user_id': int(user_info['polar-user-id']),
+                'first_name': user_info.get('first-name'),
+                'last_name': user_info.get('last-name'),
+                'birthdate': user_info.get('birthdate'),
+                'gender': user_info.get('gender')
+            }
+            # Remove None values
+            user_data = {k: v for k, v in user_data.items() if v is not None}
+            save_userinfo_to_db(db_path, user_data)
+        
         return user_info
     else:
         print(f"⚠ Failed to get user info: {response.status_code}")
@@ -842,18 +907,21 @@ def convert_tcx_to_csv(
 def get_physical_info(
     polar_user_id: int,
     access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3"
+    api_base: str = "https://www.polaraccesslink.com/v3",
+    db_path: Optional[Path] = None
 ) -> Dict[str, object]:
     """Get user's physical information from Polar API.
     
     Returns physical parameters including weight, height, heart rate zones,
     and VO2max. Fetches data from Polar API using transaction-based workflow.
-    Falls back to default values if API call fails or data is missing.
+    Falls back to database values if API returns no data, then to hardcoded defaults.
+    Saves retrieved data to database for future use.
     
     Args:
         polar_user_id: Polar user ID
         access_token: OAuth access token
         api_base: Polar API base URL
+        db_path: Optional path to DuckDB database for loading/saving physical info
     
     Returns:
         Dictionary containing physical information with structure:
@@ -868,16 +936,47 @@ def get_physical_info(
             ... (other fields from API if available)
         }
     """
-    # Default values (fallback)
-    defaults = {
-        "weight": 78.0,
-        "height": 175.0,
-        "maximum-heart-rate": 188,
-        "resting-heart-rate": 55,
-        "aerobic-threshold": None,
-        "anaerobic-threshold": None,
-        "vo2-max": 58
-    }
+    # Try to get from database first as fallback
+    db_info = None
+    if db_path:
+        db_info = get_userinfo_from_db(db_path, polar_user_id)
+    
+    # Hardcoded default values (final fallback)
+    defaults = get_default_physical_info()
+    
+    # Build fallback info: prefer database values, then defaults
+    if db_info:
+        fallback_info = {
+            "weight": db_info.get('weight', defaults['weight']),
+            "height": db_info.get('height', defaults['height']),
+            "maximum-heart-rate": db_info.get('maximum_heart_rate', defaults['maximum_heart_rate']),
+            "resting-heart-rate": db_info.get('resting_heart_rate', defaults['resting_heart_rate']),
+            "aerobic-threshold": db_info.get('aerobic_threshold', defaults['aerobic_threshold']),
+            "anaerobic-threshold": db_info.get('anaerobic_threshold', defaults['anaerobic_threshold']),
+            "vo2-max": db_info.get('vo2_max', defaults['vo2_max'])
+        }
+        fallback_source = "database"
+    else:
+        fallback_info = {
+            "weight": defaults['weight'],
+            "height": defaults['height'],
+            "maximum-heart-rate": defaults['maximum_heart_rate'],
+            "resting-heart-rate": defaults['resting_heart_rate'],
+            "aerobic-threshold": defaults['aerobic_threshold'],
+            "anaerobic-threshold": defaults['anaerobic_threshold'],
+            "vo2-max": defaults['vo2_max']
+        }
+        fallback_source = "hardcoded defaults"
+    
+    def return_fallback(reason: str = "") -> Dict[str, object]:
+        """Return fallback info with appropriate message."""
+        if reason:
+            print(reason)
+        if fallback_source == "database":
+            print("✓ Using physical info from database")
+        else:
+            print("ℹ Using hardcoded default values")
+        return fallback_info
     
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -891,20 +990,16 @@ def get_physical_info(
         transaction_resp = requests.post(transaction_url, headers=headers)
         
         if transaction_resp.status_code == 204:
-            print("ℹ No new physical info data available, using defaults")
-            return defaults
+            return return_fallback("ℹ No new physical info data available from API")
         
         if transaction_resp.status_code != 201:
-            print(f"⚠ Transaction creation failed: {transaction_resp.status_code}")
-            print(f"  Using default values")
-            return defaults
+            return return_fallback(f"⚠ Transaction creation failed: {transaction_resp.status_code}")
         
         transaction_data = transaction_resp.json()
         transaction_id = transaction_data.get('transaction-id')
         
         if not transaction_id:
-            print("⚠ No transaction ID received, using defaults")
-            return defaults
+            return return_fallback("⚠ No transaction ID received")
         
         # Step 2: List physical infos in transaction
         print(f"Listing physical infos in transaction {transaction_id}...")
@@ -912,20 +1007,18 @@ def get_physical_info(
         list_resp = requests.get(list_url, headers=headers)
         
         if list_resp.status_code != 200:
-            print(f"⚠ Could not list physical infos: {list_resp.status_code}")
             # Try to commit transaction before returning
             requests.put(list_url, headers=headers)
-            return defaults
+            return return_fallback(f"⚠ Could not list physical infos: {list_resp.status_code}")
         
         list_data = list_resp.json()
         physical_info_urls = list_data.get('physical-informations', [])
         print(f"✓ Found {len(physical_info_urls)} physical info record(s) in transaction")
         
         if not physical_info_urls:
-            print("ℹ No physical infos found in transaction")
             # Commit transaction before returning
             requests.put(list_url, headers=headers)
-            return defaults
+            return return_fallback("ℹ No physical infos found in transaction")
         
         # Step 3: Get the newest physical info (last in list)
         # Physical infos are ordered by creation date, newest last
@@ -935,10 +1028,9 @@ def get_physical_info(
         info_resp = requests.get(newest_info_url, headers=headers)
         
         if info_resp.status_code != 200:
-            print(f"⚠ Could not fetch physical info: {info_resp.status_code}")
             # Commit transaction before returning
             requests.put(list_url, headers=headers)
-            return defaults
+            return return_fallback(f"⚠ Could not fetch physical info: {info_resp.status_code}")
         
         physical_info = info_resp.json()
         
@@ -955,24 +1047,37 @@ def get_physical_info(
         result = {
             "weight": physical_info.get('weight', defaults['weight']),
             "height": physical_info.get('height', defaults['height']),
-            "maximum-heart-rate": physical_info.get('maximum-heart-rate', defaults['maximum-heart-rate']),
-            "resting-heart-rate": physical_info.get('resting-heart-rate', defaults['resting-heart-rate']),
-            "aerobic-threshold": physical_info.get('aerobic-threshold', defaults['aerobic-threshold']),
-            "anaerobic-threshold": physical_info.get('anaerobic-threshold', defaults['anaerobic-threshold']),
-            "vo2-max": physical_info.get('vo2-max', defaults['vo2-max'])
+            "maximum-heart-rate": physical_info.get('maximum-heart-rate', defaults['maximum_heart_rate']),
+            "resting-heart-rate": physical_info.get('resting-heart-rate', defaults['resting_heart_rate']),
+            "aerobic-threshold": physical_info.get('aerobic-threshold', defaults['aerobic_threshold']),
+            "anaerobic-threshold": physical_info.get('anaerobic-threshold', defaults['anaerobic_threshold']),
+            "vo2-max": physical_info.get('vo2-max', defaults['vo2_max'])
         }
         
         print(f"✓ Physical info from API: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
+        
+        # Save to database if db_path provided
+        if db_path:
+            user_data = {
+                'polar_user_id': polar_user_id,
+                'weight': result['weight'],
+                'height': result['height'],
+                'maximum_heart_rate': result['maximum-heart-rate'],
+                'resting_heart_rate': result['resting-heart-rate'],
+                'aerobic_threshold': result['aerobic-threshold'],
+                'anaerobic_threshold': result['anaerobic-threshold'],
+                'vo2_max': result['vo2-max']
+            }
+            # Remove None values
+            user_data = {k: v for k, v in user_data.items() if v is not None}
+            save_userinfo_to_db(db_path, user_data)
+        
         return result
         
     except requests.exceptions.RequestException as e:
-        print(f"⚠ API request failed: {e}")
-        print("  Using default values")
-        return defaults
+        return return_fallback(f"⚠ API request failed: {e}")
     except Exception as e:
-        print(f"⚠ Unexpected error fetching physical info: {e}")
-        print("  Using default values")
-        return defaults
+        return return_fallback(f"⚠ Unexpected error fetching physical info: {e}")
 
 
 def get_field(exercise: Dict[str, object], *keys: str) -> Optional[object]:
@@ -1106,7 +1211,8 @@ def download_exercise_tcx(
     polar_user_id: int,
     access_token: str,
     output_dir: Path = Path("hr_data"),
-    api_base: str = "https://www.polaraccesslink.com/v3"
+    api_base: str = "https://www.polaraccesslink.com/v3",
+    db_path: Optional[Path] = None
 ) -> Optional[pd.DataFrame]:
     """Download and parse TCX data for an exercise.
     
@@ -1119,6 +1225,7 @@ def download_exercise_tcx(
         access_token: OAuth access token
         output_dir: Directory to save CSV output
         api_base: Polar API base URL
+        db_path: Path to DuckDB database for user info caching
     
     Returns:
         DataFrame with parsed CSV data, or None if download fails
@@ -1130,7 +1237,7 @@ def download_exercise_tcx(
     
     # Fetch user info to get parameters for CSV conversion
     print("\nFetching user info for conversion parameters...")
-    user_info = get_user_info(polar_user_id, access_token, api_base)
+    user_info = get_user_info(polar_user_id, access_token, api_base, db_path=db_path)
     
     # Extract user name with default
     name = "Anton Antonov "  # Default
@@ -1139,7 +1246,7 @@ def download_exercise_tcx(
         print(f"✓ User name: {name.strip()}")
     
     # Get physical information using dedicated function
-    physical_info = get_physical_info(polar_user_id, access_token, api_base)
+    physical_info = get_physical_info(polar_user_id, access_token, api_base, db_path=db_path)
     
     # Extract parameters from physical_info
     weight = physical_info.get('weight', 0.0)
@@ -1475,13 +1582,17 @@ def run_polar_workflow(
         if latest_exercise:
             exercise_id = get_field(latest_exercise, 'id', 'exercise_id')
             
+            # Get db_path from config for user info caching
+            db_path = config.get('DUCKDB_PATH')
+            
             # Download TCX
             tcx_dataframe = download_exercise_tcx(
                 exercise_id=exercise_id,
                 polar_user_id=polar_user_id,
                 access_token=access_token,
                 output_dir=output_dir,
-                api_base=config['API_BASE']
+                api_base=config['API_BASE'],
+                db_path=db_path
             )
     else:
         print("ℹ No exercises available to download.")

@@ -1,0 +1,147 @@
+"""Configuration management for workout data project.
+
+This module centralizes all configuration loading from environment variables,
+including paths, database connections, and API credentials.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Dict
+
+def load_configuration() -> Dict[str, object]:
+    """Load configuration from environment variables.
+    
+    Loads all project configuration including:
+    - Polar API credentials and settings
+    - Database paths
+    - File paths for tokens and data files
+    - Output directories
+    
+    Returns:
+        Dict containing all configuration values:
+            Polar API Settings:
+            - CLIENT_ID: Polar API client ID
+            - CLIENT_SECRET: Polar API client secret
+            - REDIRECT_PORT: Port for OAuth callback (default: 5000)
+            - MEMBER_ID: Optional Polar member ID
+            - AUTH_URL: Polar authorization URL
+            - TOKEN_URL: Polar token exchange URL
+            - API_BASE: Polar API base URL
+            - ALLOW_PORT_FALLBACK: Whether to try alternative ports
+            
+            File Paths:
+            - TOKENS_FILE: Path to token storage file
+            - DUCKDB_PATH: Path to DuckDB database file
+            - VO2MAX_DATA_PATH: Path to VO2max data CSV file
+            - OUTPUT_DIR: Directory for output files (TCX, CSV exports)
+    
+    Raises:
+        ValueError: If required environment variables are missing
+    """
+    # Optional: Load from .env file if python-dotenv is available
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
+
+    # =============================================================================
+    # Polar API Configuration
+    # =============================================================================
+    CLIENT_ID = os.getenv('POLAR_CLIENT_ID')
+    CLIENT_SECRET = os.getenv('POLAR_CLIENT_SECRET')
+    REDIRECT_PORT = int(os.getenv('POLAR_REDIRECT_PORT', '5000'))
+    MEMBER_ID = os.getenv('POLAR_MEMBER_ID')
+    ALLOW_PORT_FALLBACK = os.getenv('ALLOW_PORT_FALLBACK', 'true').lower() == 'true'
+
+    # Validate required Polar API variables
+    missing_vars = []
+    if not CLIENT_ID:
+        missing_vars.append('POLAR_CLIENT_ID')
+    if not CLIENT_SECRET:
+        missing_vars.append('POLAR_CLIENT_SECRET')
+
+    if missing_vars:
+        raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
+
+    # API endpoints
+    AUTH_URL = "https://flow.polar.com/oauth2/authorization"
+    TOKEN_URL = "https://polarremote.com/v2/oauth2/token"
+    API_BASE = "https://www.polaraccesslink.com/v3"
+
+    # =============================================================================
+    # File Paths Configuration
+    # =============================================================================
+    
+    # Get base directory (parent of notebooks directory)
+    base_dir = Path(__file__).parent.parent
+    
+    # Token storage file
+    tokens_file_env = os.getenv('POLAR_TOKENS_FILE')
+    if tokens_file_env:
+        TOKENS_FILE = Path(tokens_file_env)
+        if not TOKENS_FILE.is_absolute():
+            TOKENS_FILE = base_dir / TOKENS_FILE
+    else:
+        TOKENS_FILE = base_dir / "notebooks" / "tokens_polar.json"
+
+    # DuckDB database path
+    duckdb_path_env = os.getenv('DUCKDB_PATH')
+    if duckdb_path_env:
+        DUCKDB_PATH = Path(duckdb_path_env)
+        if not DUCKDB_PATH.is_absolute():
+            DUCKDB_PATH = base_dir / DUCKDB_PATH
+    else:
+        DUCKDB_PATH = base_dir / "hr_data" / "database_v2.duckdb"
+
+    # VO2max data file
+    vo2max_path_env = os.getenv('VO2MAX_DATA_PATH')
+    if vo2max_path_env:
+        VO2MAX_DATA_PATH = Path(vo2max_path_env)
+        if not VO2MAX_DATA_PATH.is_absolute():
+            VO2MAX_DATA_PATH = base_dir / VO2MAX_DATA_PATH
+    else:
+        VO2MAX_DATA_PATH = base_dir / "data" / "v02max_data.csv"
+
+    # Output directory for exercise files
+    output_dir_env = os.getenv('OUTPUT_DIR')
+    if output_dir_env:
+        OUTPUT_DIR = Path(output_dir_env)
+        if not OUTPUT_DIR.is_absolute():
+            OUTPUT_DIR = base_dir / OUTPUT_DIR
+    else:
+        OUTPUT_DIR = base_dir / "hr_data"
+
+    # Ensure output directory exists
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    print(f"✓ Configuration loaded")
+    print(f"  - Client ID: {CLIENT_ID[:8]}...")
+    print(f"  - Redirect Port: {REDIRECT_PORT}")
+    print(f"  - Member ID: {MEMBER_ID if MEMBER_ID else 'Not set (will be obtained)'}")
+    print(f"  - DuckDB Path: {DUCKDB_PATH}")
+    print(f"  - Tokens File: {TOKENS_FILE}")
+    print(f"  - VO2max Data: {VO2MAX_DATA_PATH}")
+    print(f"  - Output Dir: {OUTPUT_DIR}")
+
+    return {
+        # Polar API
+        'CLIENT_ID': CLIENT_ID,
+        'CLIENT_SECRET': CLIENT_SECRET,
+        'REDIRECT_PORT': REDIRECT_PORT,
+        'MEMBER_ID': MEMBER_ID,
+        'AUTH_URL': AUTH_URL,
+        'TOKEN_URL': TOKEN_URL,
+        'API_BASE': API_BASE,
+        'ALLOW_PORT_FALLBACK': ALLOW_PORT_FALLBACK,
+        
+        # File Paths
+        'TOKENS_FILE': TOKENS_FILE,
+        'DUCKDB_PATH': DUCKDB_PATH,
+        'VO2MAX_DATA_PATH': VO2MAX_DATA_PATH,
+        'OUTPUT_DIR': OUTPUT_DIR,
+    }
+
+
+__all__ = ['load_configuration']

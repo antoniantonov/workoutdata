@@ -11,17 +11,33 @@ The functions handle the Polar CSV format with metadata rows and time-series dat
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 
-def delete_workout_by_id(db_path: str, workout_id: str):
+from config import load_configuration
+
+def delete_workout_by_id(workout_id: str, db_path: Optional[str | Path] = None):
     """
     Delete all rows with the specified workoutId from both workout_metadata and timeseries tables.
+    
+    Parameters
+    ----------
+    workout_id : str
+        The workout ID to delete.
+    db_path : str, Path, or None (optional)
+        Path to the DuckDB database file. If None, loads DUCKDB_PATH from config.
     """
+    config = load_configuration()
+    
+    if db_path is None:
+        db_path = config['DUCKDB_PATH']
+    else:
+        db_path = Path(db_path).resolve()
+    
     try:
-        con = duckdb.connect(db_path)
+        con = duckdb.connect(str(db_path))
         query = "DELETE FROM workout_metadata WHERE workoutId = ?"
         con.execute(query, (workout_id,))
         query = "DELETE FROM timeseries WHERE workoutId = ?"
@@ -271,18 +287,21 @@ def import_workout_csv(csv_path: str, con: duckdb.DuckDBPyConnection, approved_c
 
 
 def import_workout_from_directory(
-    data_dir: str | Path,
-    glob_patterns: str | Path | Iterable[str | Path]
+    glob_patterns: str | Path | Iterable[str | Path],
+    data_dir: Optional[str | Path] = None,
+    db_path: Optional[str | Path] = None
 ) -> dict[str, int]:
     """
     Batch-import workout CSV files from a directory into the DuckDB database.
 
     Parameters
     ----------
-    data_dir : str or Path
-        Path to the directory containing workout CSV files.
     glob_patterns : str, Path, or Iterable[str or Path]
         Glob pattern(s) to match CSV files (e.g., "Anton_Antonov*.CSV").
+    data_dir : str, Path, or None (optional)
+        Path to the directory containing workout CSV files. If None, loads OUTPUT_DIR from config.
+    db_path : str, Path, or None (optional)
+        Path to the DuckDB database file. If None, loads DUCKDB_PATH from config.
 
     Returns
     -------
@@ -300,7 +319,18 @@ def import_workout_from_directory(
     Any exceptions during import are caught internally; error details are printed,
     and the error count is incremented in the returned dictionary.
     """
-    data_dir_path = Path(data_dir).resolve()
+    # Load configuration and resolve paths
+    config = load_configuration()
+    
+    if data_dir is None:
+        data_dir_path = config['OUTPUT_DIR']
+    else:
+        data_dir_path = Path(data_dir).resolve()
+    
+    if db_path is None:
+        db_path = config['DUCKDB_PATH']
+    else:
+        db_path = Path(db_path).resolve()
 
     if isinstance(glob_patterns, (str, Path)):
         patterns = [str(glob_patterns)]
@@ -331,8 +361,7 @@ def import_workout_from_directory(
         }
 
     print(f"Found {total_files} CSV file(s). Processing...\n")
-
-    db_path = data_dir_path / "database_v2.duckdb"
+    
     con = duckdb.connect(db_path)
 
     try:

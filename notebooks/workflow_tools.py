@@ -326,6 +326,100 @@ def get_default_physical_info() -> Dict[str, object]:
     }
 
 
+def generate_workout_id_from_start_time(start_time_str: str) -> str:
+    """Generate workoutId from exercise start time string.
+    
+    Converts start time from Polar API format to workoutId format.
+    
+    Args:
+        start_time_str: Start time string from Polar API (e.g., "2025-05-11T10:59:46.000")
+    
+    Returns:
+        WorkoutId in format "DD-MM-YYYY_HHMMSS" (e.g., "11-05-2025_105946")
+    """
+    from datetime import datetime
+    
+    # Handle various formats from Polar API
+    # Remove timezone info if present
+    clean_time = start_time_str.replace('Z', '').replace('+00:00', '')
+    
+    # Try parsing with milliseconds first, then without
+    for fmt in ['%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S']:
+        try:
+            dt = datetime.fromisoformat(clean_time)
+            break
+        except ValueError:
+            continue
+    else:
+        # Fallback: try direct parsing
+        dt = datetime.fromisoformat(clean_time)
+    
+    # Format: DD-MM-YYYY_HHMMSS
+    return dt.strftime('%d-%m-%Y_%H%M%S')
+
+
+def get_existing_workout_ids(db_path: Path) -> set:
+    """Get set of existing workout IDs from the database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+    
+    Returns:
+        Set of workout IDs that already exist in workout_metadata table
+    """
+    existing_ids = set()
+    
+    try:
+        con = duckdb.connect(str(db_path))
+        try:
+            # Check if table exists
+            result = con.execute("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_name = 'workout_metadata'
+            """).fetchone()
+            
+            if result:
+                # Get all existing workout IDs
+                rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
+                existing_ids = {row[0] for row in rows}
+                print(f"✓ Found {len(existing_ids)} existing workouts in database")
+            else:
+                print("ℹ workout_metadata table does not exist yet")
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"⚠ Error checking existing workouts: {e}")
+    
+    return existing_ids
+
+
+def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Path) -> List[Dict[str, object]]:
+    """Filter exercises to only include those not already in the database.
+    
+    Args:
+        exercises: List of exercise dictionaries from Polar API
+        db_path: Path to DuckDB database file
+    
+    Returns:
+        List of exercises that don't have a corresponding workoutId in the database
+    """
+    existing_ids = get_existing_workout_ids(db_path)
+    
+    new_exercises = []
+    for ex in exercises:
+        start_time = get_field(ex, 'start_time', 'start-time', 'local_start_time')
+        if start_time:
+            workout_id = generate_workout_id_from_start_time(start_time)
+            if workout_id not in existing_ids:
+                new_exercises.append(ex)
+            else:
+                exercise_id = get_field(ex, 'id', 'exercise_id')
+                print(f"  ⏭ Skipping exercise {exercise_id} (workoutId {workout_id} already exists)")
+    
+    print(f"\n✓ Found {len(new_exercises)} new exercise(s) to import (out of {len(exercises)} total)")
+    return new_exercises
+
+
 # =============================================================================
 # User Management Functions
 # =============================================================================
@@ -722,7 +816,9 @@ def convert_tcx_to_csv(
     weight: float,
     hr_max: int,
     hr_sit: int,
-    vo2max: int
+    vo2max: int,
+    override_date_str: Optional[str] = None,
+    override_time_str: Optional[str] = None
 ) -> Path:
     """Convert TCX file to Polar-compatible CSV format.
     
@@ -739,6 +835,10 @@ def convert_tcx_to_csv(
         hr_max: Maximum heart rate (default: 188)
         hr_sit: Sitting heart rate (default: None)
         vo2max: VO2max value (default: 58)
+        override_date_str: Optional date string in DD-MM-YYYY format to use instead of TCX date.
+                          Use this when the TCX contains UTC time but you want local time.
+        override_time_str: Optional time string in HH:MM:SS format to use instead of TCX time.
+                          Use this when the TCX contains UTC time but you want local time.
     
     Returns:
         Path to the created CSV file
@@ -775,8 +875,17 @@ def convert_tcx_to_csv(
     # Extract start time and convert to DD-MM-YYYY format and HH:MM:SS
     start_time_str = lap.get('StartTime')  # e.g., "2025-10-19T00:47:34.000Z"
     start_dt = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
-    date_str = start_dt.strftime('%d-%m-%Y')  # DD-MM-YYYY
-    time_str = start_dt.strftime('%H:%M:%S')  # HH:MM:SS
+    
+    # Use override date/time if provided (for using local time instead of TCX UTC time)
+    if override_date_str is not None:
+        date_str = override_date_str
+    else:
+        date_str = start_dt.strftime('%d-%m-%Y')  # DD-MM-YYYY
+    
+    if override_time_str is not None:
+        time_str = override_time_str
+    else:
+        time_str = start_dt.strftime('%H:%M:%S')  # HH:MM:SS
     
     # Extract metadata
     total_time_seconds = float(lap.find('tcx:TotalTimeSeconds', ns).text)
@@ -1212,7 +1321,8 @@ def download_exercise_tcx(
     access_token: str,
     output_dir: Path = Path("hr_data"),
     api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None
+    db_path: Optional[Path] = None,
+    start_time: Optional[str] = None
 ) -> Optional[pd.DataFrame]:
     """Download and parse TCX data for an exercise.
     
@@ -1226,6 +1336,10 @@ def download_exercise_tcx(
         output_dir: Directory to save CSV output
         api_base: Polar API base URL
         db_path: Path to DuckDB database for user info caching
+        start_time: Start time from exercise listing API (local time).
+                   If provided, this is used for workoutId and CSV metadata
+                   instead of the UTC time in the TCX file.
+                   Format: "2025-05-11T10:59:46.000" (ISO format)
     
     Returns:
         DataFrame with parsed CSV data, or None if download fails
@@ -1255,6 +1369,33 @@ def download_exercise_tcx(
     hr_sit = physical_info.get('resting-heart-rate', 0)
     vo2max = physical_info.get('vo2-max', 0)
     
+    # Parse start_time to generate date/time strings for CSV metadata and filename
+    override_date_str = None
+    override_time_str = None
+    csv_filename = f"polar_latest_exercise_{exercise_id}.csv"  # fallback name
+    
+    if start_time:
+        try:
+            from datetime import datetime as dt
+            # Parse the start time from exercise listing (local time)
+            # Format: "2025-05-11T10:59:46.000" or "2025-05-11T10:59:46"
+            start_time_clean = start_time.replace('Z', '') if start_time.endswith('Z') else start_time
+            if '.' in start_time_clean:
+                parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0])
+            else:
+                parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0])
+            
+            # Generate DD-MM-YYYY and HH:MM:SS for CSV metadata
+            override_date_str = parsed_dt.strftime('%d-%m-%Y')
+            override_time_str = parsed_dt.strftime('%H:%M:%S')
+            
+            # Generate filename: Anton_Antonov_yyyy-mm-dd_HHMMSS_tcx_convert.CSV
+            csv_filename = f"Anton_Antonov_{parsed_dt.strftime('%Y-%m-%d')}_{parsed_dt.strftime('%H%M%S')}_tcx_convert.CSV"
+            print(f"✓ Using start time from exercise listing: {start_time}")
+        except Exception as e:
+            print(f"⚠ Could not parse start_time '{start_time}': {e}")
+            print("  Falling back to TCX file timestamps")
+    
     # Fetch TCX for exercise
     print("\nDownloading TCX for exercise...")
     tcx_url = f"{api_base}/exercises/{exercise_id}/tcx"
@@ -1269,41 +1410,37 @@ def download_exercise_tcx(
     
     print("✓ TCX downloaded")
     
-    # Save TCX temporarily
+    # Save TCX file (kept for reference, not deleted)
     output_dir.mkdir(exist_ok=True)
-    temp_tcx_path = output_dir / f"temp_exercise_{exercise_id}.tcx"
+    tcx_path = output_dir / f"exercise_{exercise_id}.tcx"
     
-    try:
-        with open(temp_tcx_path, 'wb') as f:
-            f.write(tcx_resp.content)
-        
-        # Convert TCX to CSV using convert_tcx_to_csv
-        csv_path = output_dir / f"polar_latest_exercise_{exercise_id}.csv"
-        
-        convert_tcx_to_csv(
-            tcx_path=temp_tcx_path,
-            output_csv_path=csv_path,
-            name=name,
-            height=height,
-            weight=weight,
-            hr_max=hr_max,
-            hr_sit=hr_sit,
-            vo2max=vo2max
-        )
-        
-        # Read the CSV and return as DataFrame
-        df_csv = pd.read_csv(csv_path, skiprows=2)  # Skip metadata rows
-        print(f"✓ CSV saved: {csv_path}")
-        print("\nSample:")
-        print(df_csv.head(10))
-        
-        return df_csv
-        
-    finally:
-        # Clean up temporary TCX file
-        if temp_tcx_path.exists():
-            temp_tcx_path.unlink()
-            print(f"✓ Cleaned up temporary TCX file")
+    with open(tcx_path, 'wb') as f:
+        f.write(tcx_resp.content)
+    print(f"✓ TCX saved: {tcx_path}")
+    
+    # Convert TCX to CSV using convert_tcx_to_csv
+    csv_path = output_dir / csv_filename
+    
+    convert_tcx_to_csv(
+        tcx_path=tcx_path,
+        output_csv_path=csv_path,
+        name=name,
+        height=height,
+        weight=weight,
+        hr_max=hr_max,
+        hr_sit=hr_sit,
+        vo2max=vo2max,
+        override_date_str=override_date_str,
+        override_time_str=override_time_str
+    )
+    
+    # Read the CSV and return as DataFrame
+    df_csv = pd.read_csv(csv_path, skiprows=2)  # Skip metadata rows
+    print(f"✓ CSV saved: {csv_path}")
+    print("\nSample:")
+    print(df_csv.head(10))
+    
+    return df_csv
 
 
 def fetch_and_export_latest_exercise(
@@ -1557,8 +1694,8 @@ def run_polar_workflow(
     )
     print()
     
-    # Step 4: List and download latest exercise
-    print("Step 4: Fetching and exporting latest exercise...")
+    # Step 4: List and download all new exercises
+    print("Step 4: Fetching and exporting new exercises...")
     
     if not polar_user_id:
         raise Exception("Polar user ID unavailable. Cannot proceed with exercise fetch.")
@@ -1569,37 +1706,53 @@ def run_polar_workflow(
         api_base=config['API_BASE']
     )
     
-    tcx_dataframe = None
-    latest_exercise = None
+    tcx_dataframes = []
+    new_exercises = []
     
     if exercises:
-        # Display exercises
+        # Display all exercises
         display_exercises(exercises)
         
-        # Select latest
-        latest_exercise = select_latest_exercise(exercises)
+        # Get db_path from config for user info caching and filtering
+        db_path = config.get('DUCKDB_PATH')
         
-        if latest_exercise:
-            exercise_id = get_field(latest_exercise, 'id', 'exercise_id')
+        # Filter to only new exercises (not already in database)
+        new_exercises = filter_new_exercises(exercises, db_path)
+        
+        if new_exercises:
+            print(f"\n✓ Found {len(new_exercises)} new exercise(s) to download")
             
-            # Get db_path from config for user info caching
-            db_path = config.get('DUCKDB_PATH')
-            
-            # Download TCX
-            tcx_dataframe = download_exercise_tcx(
-                exercise_id=exercise_id,
-                polar_user_id=polar_user_id,
-                access_token=access_token,
-                output_dir=output_dir,
-                api_base=config['API_BASE'],
-                db_path=db_path
-            )
+            for i, exercise in enumerate(new_exercises, 1):
+                exercise_id = get_field(exercise, 'id', 'exercise_id')
+                start_time = get_field(exercise, 'start_time', 'start-time', 'local_start_time')
+                
+                print(f"\n--- Processing exercise {i}/{len(new_exercises)} ---")
+                print(f"Exercise ID: {exercise_id}")
+                print(f"Start Time: {start_time}")
+                
+                # Download TCX and convert to CSV
+                tcx_dataframe = download_exercise_tcx(
+                    exercise_id=exercise_id,
+                    polar_user_id=polar_user_id,
+                    access_token=access_token,
+                    output_dir=output_dir,
+                    api_base=config['API_BASE'],
+                    db_path=db_path,
+                    start_time=start_time
+                )
+                
+                if tcx_dataframe is not None:
+                    tcx_dataframes.append(tcx_dataframe)
+        else:
+            print("\nℹ All exercises are already in the database. Nothing new to download.")
     else:
         print("ℹ No exercises available to download.")
     
     print()
     print("="*80)
     print("✓ WORKFLOW COMPLETE")
+    if tcx_dataframes:
+        print(f"  Downloaded {len(tcx_dataframes)} new exercise(s)")
     print("="*80)
     
     return {
@@ -1607,8 +1760,8 @@ def run_polar_workflow(
         'polar_user_id': polar_user_id,
         'access_token': access_token,
         'exercises': exercises,
-        'latest_exercise': latest_exercise,
-        'tcx_dataframe': tcx_dataframe
+        'new_exercises': new_exercises,
+        'tcx_dataframes': tcx_dataframes
     }
 
 
@@ -1627,6 +1780,10 @@ __all__ = [
     # User management
     'get_user_info',
     'register_user',
+    'get_default_physical_info',
+    'generate_workout_id_from_start_time',
+    'get_existing_workout_ids',
+    'filter_new_exercises',
 
     # OAuth flow
     'create_callback_handler',

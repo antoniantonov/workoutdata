@@ -189,24 +189,6 @@ def refresh_access_token(
     return token_data
 
 
-def ensure_token(tokens_file: Path = Path("tokens_polar.json")) -> Optional[str]:
-    """Placeholder for token management - load existing or prompt for new authorization.
-    
-    Args:
-        tokens_file: Path to token storage file
-    
-    Returns:
-        Access token if available, None otherwise
-    """
-    tokens = load_tokens(tokens_file)
-    if tokens:
-        print(f"✓ Using existing tokens from {tokens_file}")
-        return tokens['access_token']
-    else:
-        print("⚠ No tokens found. Please complete authorization flow first.")
-        return None
-
-
 # =============================================================================
 # User Info Database Management
 # =============================================================================
@@ -1294,32 +1276,11 @@ def display_exercises(exercises: List[Dict[str, object]]) -> None:
     print("\n" + "="*80)
 
 
-def select_latest_exercise(exercises: List[Dict[str, object]]) -> Optional[Dict[str, object]]:
-    """Select the most recent exercise from a list.
-    
-    Args:
-        exercises: List of exercise dictionaries
-    
-    Returns:
-        Latest exercise dictionary, or None if list is empty
-    """
-    if not exercises:
-        return None
-    
-    latest = max(exercises, key=normalize_start_time)
-    exercise_id = get_field(latest, 'id', 'exercise_id')
-    latest_start = get_field(latest, 'start_time', 'start-time', 'local_start_time')
-    print(f"\n✓ Selected latest exercise: {exercise_id}")
-    print(f"  Start Time: {latest_start}")
-    
-    return latest
-
-
 def download_exercise_tcx(
     exercise_id: str,
     polar_user_id: int,
     access_token: str,
-    output_dir: Path = Path("hr_data"),
+    output_dir: Path,
     api_base: str = "https://www.polaraccesslink.com/v3",
     db_path: Optional[Path] = None,
     start_time: Optional[str] = None
@@ -1443,51 +1404,6 @@ def download_exercise_tcx(
     return df_csv
 
 
-def fetch_and_export_latest_exercise(
-    polar_user_id: Optional[int],
-    access_token: str,
-    output_dir: Path = Path("hr_data"),
-    api_base: str = "https://www.polaraccesslink.com/v3"
-) -> None:
-    """Complete workflow to fetch exercises and export latest TCX data.
-    
-    Args:
-        polar_user_id: Polar user ID (for validation)
-        access_token: OAuth access token
-        output_dir: Directory to save CSV output
-        api_base: Polar API base URL
-    
-    Raises:
-        Exception: If polar_user_id is not available
-    """
-    if not polar_user_id:
-        raise Exception("Polar user ID unavailable. Ensure registration step completed.")
-
-    # List exercises
-    exercises = list_exercises(access_token, api_base)
-    
-    if not exercises:
-        print("ℹ No exercises to process; skipping TCX download.")
-        return
-    
-    # Display exercises
-    display_exercises(exercises)
-    
-    # Select latest
-    latest = select_latest_exercise(exercises)
-    if not latest:
-        return
-    
-    exercise_id = get_field(latest, 'id', 'exercise_id')
-    
-    # Download TCX
-    download_exercise_tcx(exercise_id, polar_user_id, access_token, output_dir, api_base)
-    
-    print("\n" + "="*80)
-    print("EXERCISE FETCH (NEW API) COMPLETE")
-    print("="*80)
-
-
 # =============================================================================
 # Validation Functions
 # =============================================================================
@@ -1603,7 +1519,6 @@ def run_validation_checks(
 # =============================================================================
 
 def run_polar_workflow(
-    output_dir: Path = Path("hr_data"),
     tokens_file: Path = Path("tokens_polar.json"),
     timeout: int = 300
 ) -> Dict[str, object]:
@@ -1613,10 +1528,9 @@ def run_polar_workflow(
     1. Load configuration from environment variables
     2. Check token validity and run authorization if needed
     3. Register user (idempotent)
-    4. List and download latest exercise TCX data
+    4. List and download all new exercises (not already in database)
     
     Args:
-        output_dir: Directory to save exercise CSV output (default: hr_data)
         tokens_file: Path to token storage file (default: tokens_polar.json)
         timeout: Timeout for authorization flow in seconds (default: 300)
     
@@ -1625,9 +1539,9 @@ def run_polar_workflow(
             - config: Configuration dictionary
             - polar_user_id: Polar user ID
             - access_token: OAuth access token
-            - exercises: List of exercises
-            - latest_exercise: Latest exercise data
-            - tcx_dataframe: DataFrame with trackpoint data (if available)
+            - exercises: List of all exercises
+            - new_exercises: List of newly downloaded exercises
+            - tcx_dataframes: List of DataFrames with trackpoint data
     
     Raises:
         ValueError: If configuration is invalid
@@ -1640,6 +1554,7 @@ def run_polar_workflow(
     # Step 1: Load configuration
     print("Step 1: Loading configuration...")
     config = load_configuration()
+    output_dir = config['OUTPUT_DIR']
     print()
     
     # Step 2: Check token validity and authorize if needed
@@ -1775,7 +1690,6 @@ __all__ = [
     'encode_credentials',
     'exchange_code_for_token',
     'refresh_access_token',
-    'ensure_token',
 
     # User management
     'get_user_info',
@@ -1800,9 +1714,7 @@ __all__ = [
     'normalize_start_time',
     'list_exercises',
     'display_exercises',
-    'select_latest_exercise',
     'download_exercise_tcx',
-    'fetch_and_export_latest_exercise',
 
     # Validation
     'is_token_valid',

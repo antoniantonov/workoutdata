@@ -25,9 +25,9 @@ def load_configuration() -> Dict[str, object]:
             - CLIENT_SECRET: Polar API client secret
             - REDIRECT_PORT: Port for OAuth callback (default: 5000)
             - MEMBER_ID: Optional Polar member ID
-            - AUTH_URL: Polar authorization URL
-            - TOKEN_URL: Polar token exchange URL
-            - API_BASE: Polar API base URL
+            - AUTH_URL: Polar authorization URL (env: POLAR_AUTH_URL)
+            - TOKEN_URL: Polar token exchange URL (env: POLAR_TOKEN_URL)
+            - API_BASE: Polar API base URL (env: POLAR_API_BASE)
             - ALLOW_PORT_FALLBACK: Whether to try alternative ports
             
             File Paths:
@@ -65,10 +65,10 @@ def load_configuration() -> Dict[str, object]:
     if missing_vars:
         raise ValueError(f"Missing required environment variables: {', '.join(missing_vars)}")
 
-    # API endpoints
-    AUTH_URL = "https://flow.polar.com/oauth2/authorization"
-    TOKEN_URL = "https://polarremote.com/v2/oauth2/token"
-    API_BASE = "https://www.polaraccesslink.com/v3"
+    # API endpoints (with environment variable overrides)
+    AUTH_URL = os.getenv('POLAR_AUTH_URL', "https://flow.polar.com/oauth2/authorization")
+    TOKEN_URL = os.getenv('POLAR_TOKEN_URL', "https://polarremote.com/v2/oauth2/token")
+    API_BASE = os.getenv('POLAR_API_BASE', "https://www.polaraccesslink.com/v3")
 
     # =============================================================================
     # File Paths Configuration
@@ -135,7 +135,7 @@ def load_configuration() -> Dict[str, object]:
         'TOKEN_URL': TOKEN_URL,
         'API_BASE': API_BASE,
         'ALLOW_PORT_FALLBACK': ALLOW_PORT_FALLBACK,
-        
+
         # File Paths
         'TOKENS_FILE': TOKENS_FILE,
         'DUCKDB_PATH': DUCKDB_PATH,

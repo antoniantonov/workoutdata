@@ -61,7 +61,7 @@ def save_tokens(
     }
     with open(tokens_file, 'w') as f:
         json.dump(tokens, f, indent=2)
-    print(f"✓ Tokens saved to {tokens_file}")
+    print(f"✅ Tokens saved to {tokens_file}")
 
 
 def load_tokens(tokens_file: Path = Path("tokens_polar.json")) -> Optional[Dict[str, str]]:
@@ -141,7 +141,7 @@ def exchange_code_for_token(
         raise Exception(f"Token exchange failed: {response.text}")
     
     token_data = response.json()
-    print("✓ Token exchange successful")
+    print("✅ Token exchange successful")
     return token_data
 
 
@@ -185,7 +185,7 @@ def refresh_access_token(
         raise Exception(f"Token refresh failed: {response.text}")
     
     token_data = response.json()
-    print("✓ Token refresh successful")
+    print("✅ Token refresh successful")
     return token_data
 
 
@@ -221,7 +221,7 @@ def ensure_userinfo_table(db_path: Path) -> None:
             last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
-        print("✓ Userinfo table ensured")
+        print("✅ Userinfo table ensured")
     finally:
         con.close()
 
@@ -248,7 +248,7 @@ def get_userinfo_from_db(db_path: Path, polar_user_id: int) -> Optional[Dict[str
             return dict(zip(columns, result))
         return None
     except Exception as e:
-        print(f"⚠ Error reading from userinfo table: {e}")
+        print(f"⚠️  Error reading from userinfo table: {e}")
         return None
     finally:
         con.close()
@@ -262,7 +262,7 @@ def save_userinfo_to_db(db_path: Path, user_data: Dict[str, object]) -> None:
         user_data: Dictionary with user information (must include polar_user_id)
     """
     if 'polar_user_id' not in user_data:
-        print("⚠ Cannot save userinfo: polar_user_id missing")
+        print("⚠️  Cannot save userinfo: polar_user_id missing")
         return
     
     ensure_userinfo_table(db_path)
@@ -284,9 +284,9 @@ def save_userinfo_to_db(db_path: Path, user_data: Dict[str, object]) -> None:
             f"INSERT INTO userinfo ({field_names}, last_updated) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
             tuple(user_data[f] for f in fields)
         )
-        print(f"✓ Userinfo saved to database for user {user_data['polar_user_id']}")
+        print(f"✅ Userinfo saved to database for user {user_data['polar_user_id']}")
     except Exception as e:
-        print(f"⚠ Error saving to userinfo table: {e}")
+        print(f"⚠️  Error saving to userinfo table: {e}")
     finally:
         con.close()
 
@@ -364,13 +364,13 @@ def get_existing_workout_ids(db_path: Path) -> set:
                 # Get all existing workout IDs
                 rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
                 existing_ids = {row[0] for row in rows}
-                print(f"✓ Found {len(existing_ids)} existing workouts in database")
+                print(f"✅ Found {len(existing_ids)} existing workouts in database")
             else:
-                print("ℹ workout_metadata table does not exist yet")
+                print("⚠️ workout_metadata table does not exist yet")
         finally:
             con.close()
     except Exception as e:
-        print(f"⚠ Error checking existing workouts: {e}")
+        print(f"⚠️  Error checking existing workouts: {e}")
     
     return existing_ids
 
@@ -398,7 +398,7 @@ def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Path) -> L
                 exercise_id = get_field(ex, 'id', 'exercise_id')
                 print(f"  ⏭ Skipping exercise {exercise_id} (workoutId {workout_id} already exists)")
     
-    print(f"\n✓ Found {len(new_exercises)} new exercise(s) to import (out of {len(exercises)} total)")
+    print(f"\n✅ Found {len(new_exercises)} new exercise(s) to import (out of {len(exercises)} total)")
     return new_exercises
 
 
@@ -434,7 +434,7 @@ def get_user_info(
     
     if response.status_code == 200:
         user_info = response.json()
-        print(f"✓ User info retrieved")
+        print(f"✅ User info retrieved")
         
         # Save to database if db_path provided
         if db_path and 'polar-user-id' in user_info:
@@ -451,7 +451,7 @@ def get_user_info(
         
         return user_info
     else:
-        print(f"⚠ Failed to get user info: {response.status_code}")
+        print(f"⚠️  Failed to get user info: {response.status_code}")
         return None
 
 
@@ -500,12 +500,12 @@ def register_user(
         # Successfully registered
         user_data = response.json()
         polar_user_id = user_data.get('polar-user-id')
-        print(f"✓ User registered successfully")
+        print(f"✅ User registered successfully")
         print(f"  Polar User ID: {polar_user_id}")
         
     elif response.status_code == 409:
         # User already registered
-        print("ℹ User already registered (409 Conflict)")
+        print("⚠️ User already registered (409 Conflict)")
         
         # Fetch user info to get polar-user-id
         user_id_to_fetch = member_id if member_id else "self"
@@ -513,16 +513,16 @@ def register_user(
         
         if user_info:
             polar_user_id = user_info.get('polar-user-id')
-            print(f"✓ Retrieved Polar User ID: {polar_user_id}")
+            print(f"✅ Retrieved Polar User ID: {polar_user_id}")
         else:
-            print("⚠ Could not retrieve polar-user-id, will attempt to continue")
+            print("⚠️  Could not retrieve polar-user-id, will attempt to continue")
             
     else:
         print(f"❌ User registration failed: {response.status_code}")
         print(f"   Response: {response.text}")
         raise Exception(f"User registration failed: {response.text}")
 
-    print(f"\n✓ User registration complete. Polar User ID: {polar_user_id or 'Unknown'}")
+    print(f"\n✅ User registration complete. Polar User ID: {polar_user_id or 'Unknown'}")
     return polar_user_id
 
 
@@ -637,12 +637,12 @@ def start_callback_server(
             ) from e
         
         # Try to find an available port
-        print(f"⚠ Port {port} is busy, trying to find an available port...")
+        print(f"⚠️  Port {port} is busy, trying to find an available port...")
         for try_port in range(port + 1, port + 100):
             try:
                 server = HTTPServer(('localhost', try_port), CallbackHandler)
                 actual_port = try_port
-                print(f"✓ Using fallback port: {actual_port}")
+                print(f"✅ Using fallback port: {actual_port}")
                 break
             except OSError:
                 continue
@@ -651,7 +651,7 @@ def start_callback_server(
             raise RuntimeError("Could not find an available port")
     
     redirect_uri = f"http://localhost:{actual_port}/callback"
-    print(f"✓ Callback server ready at: {redirect_uri}")
+    print(f"✅ Callback server ready at: {redirect_uri}")
     
     # Start server in background thread
     def serve():
@@ -721,8 +721,8 @@ def run_authorization_flow(
         print(f"\n❌ Authorization failed: {result_storage['auth_error']}")
         raise Exception(f"Authorization failed: {result_storage['auth_error']}")
     elif result_storage['auth_code']:
-        print(f"\n✓ Authorization code captured: {result_storage['auth_code'][:8]}...")
-        print(f"✓ Redirect URI used: {redirect_uri}")
+        print(f"\n✅ Authorization code captured: {result_storage['auth_code'][:8]}...")
+        print(f"✅ Redirect URI used: {redirect_uri}")
         return result_storage['auth_code'], redirect_uri
     else:
         print("\n❌ Timeout waiting for authorization")
@@ -983,7 +983,7 @@ def convert_tcx_to_csv(
         for row in timeseries_rows:
             writer.writerow(row)
     
-    print(f"✓ Converted TCX to CSV: {output_csv_path}")
+    print(f"✅ Converted TCX to CSV: {output_csv_path}")
     print(f"  - Duration: {duration}")
     print(f"  - Trackpoints: {len(trackpoints)}")
     print(f"  - Average HR: {avg_hr if avg_hr else 'N/A'}")
@@ -1064,9 +1064,9 @@ def get_physical_info(
         if reason:
             print(reason)
         if fallback_source == "database":
-            print("✓ Using physical info from database")
+            print("✅ Using physical info from database")
         else:
-            print("ℹ Using hardcoded default values")
+            print("⚠️ Using hardcoded default values")
         return fallback_info
     
     headers = {
@@ -1081,16 +1081,16 @@ def get_physical_info(
         transaction_resp = requests.post(transaction_url, headers=headers)
         
         if transaction_resp.status_code == 204:
-            return return_fallback("ℹ No new physical info data available from API")
+            return return_fallback("⚠️ No new physical info data available from API")
         
         if transaction_resp.status_code != 201:
-            return return_fallback(f"⚠ Transaction creation failed: {transaction_resp.status_code}")
+            return return_fallback(f"⚠️  Transaction creation failed: {transaction_resp.status_code}")
         
         transaction_data = transaction_resp.json()
         transaction_id = transaction_data.get('transaction-id')
         
         if not transaction_id:
-            return return_fallback("⚠ No transaction ID received")
+            return return_fallback("⚠️  No transaction ID received")
         
         # Step 2: List physical infos in transaction
         print(f"Listing physical infos in transaction {transaction_id}...")
@@ -1100,16 +1100,16 @@ def get_physical_info(
         if list_resp.status_code != 200:
             # Try to commit transaction before returning
             requests.put(list_url, headers=headers)
-            return return_fallback(f"⚠ Could not list physical infos: {list_resp.status_code}")
+            return return_fallback(f"⚠️  Could not list physical infos: {list_resp.status_code}")
         
         list_data = list_resp.json()
         physical_info_urls = list_data.get('physical-informations', [])
-        print(f"✓ Found {len(physical_info_urls)} physical info record(s) in transaction")
+        print(f"✅ Found {len(physical_info_urls)} physical info record(s) in transaction")
         
         if not physical_info_urls:
             # Commit transaction before returning
             requests.put(list_url, headers=headers)
-            return return_fallback("ℹ No physical infos found in transaction")
+            return return_fallback("⚠️ No physical infos found in transaction")
         
         # Step 3: Get the newest physical info (last in list)
         # Physical infos are ordered by creation date, newest last
@@ -1121,7 +1121,7 @@ def get_physical_info(
         if info_resp.status_code != 200:
             # Commit transaction before returning
             requests.put(list_url, headers=headers)
-            return return_fallback(f"⚠ Could not fetch physical info: {info_resp.status_code}")
+            return return_fallback(f"⚠️  Could not fetch physical info: {info_resp.status_code}")
         
         physical_info = info_resp.json()
         
@@ -1130,9 +1130,9 @@ def get_physical_info(
         commit_resp = requests.put(list_url, headers=headers)
         
         if commit_resp.status_code != 200:
-            print(f"⚠ Transaction commit failed: {commit_resp.status_code}")
+            print(f"⚠️  Transaction commit failed: {commit_resp.status_code}")
         else:
-            print("✓ Transaction committed successfully")
+            print("✅ Transaction committed successfully")
         
         # Extract values from API response, using defaults as fallback
         result = {
@@ -1145,7 +1145,7 @@ def get_physical_info(
             "vo2-max": physical_info.get('vo2-max', defaults['vo2_max'])
         }
         
-        print(f"✓ Physical info from API: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
+        print(f"✅ Physical info from API: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
         
         # Save to database if db_path provided
         if db_path:
@@ -1166,9 +1166,9 @@ def get_physical_info(
         return result
         
     except requests.exceptions.RequestException as e:
-        return return_fallback(f"⚠ API request failed: {e}")
+        return return_fallback(f"⚠️  API request failed: {e}")
     except Exception as e:
-        return return_fallback(f"⚠ Unexpected error fetching physical info: {e}")
+        return return_fallback(f"⚠️  Unexpected error fetching physical info: {e}")
 
 
 def get_field(exercise: Dict[str, object], *keys: str) -> Optional[object]:
@@ -1242,10 +1242,10 @@ def list_exercises(
         elif isinstance(body, dict):
             exercises = body.get('exercises', [])
         else:
-            print(f"⚠ Unexpected exercises payload type: {type(body).__name__}")
-        print(f"✓ Retrieved {len(exercises)} exercise(s)")
+            print(f"⚠️  Unexpected exercises payload type: {type(body).__name__}")
+        print(f"✅ Retrieved {len(exercises)} exercise(s)")
     elif resp.status_code == 204:
-        print("ℹ No exercises available (204 No Content)")
+        print("⚠️ No exercises available (204 No Content)")
     else:
         print(f"❌ Failed to list exercises: {resp.status_code}")
         print(f"   Response: {resp.text}")
@@ -1261,7 +1261,7 @@ def display_exercises(exercises: List[Dict[str, object]]) -> None:
         exercises: List of exercise dictionaries
     """
     if not exercises:
-        print("ℹ No exercises to display.")
+        print("⚠️ No exercises to display.")
         return
     
     print("\n" + "="*80)
@@ -1278,25 +1278,33 @@ def display_exercises(exercises: List[Dict[str, object]]) -> None:
 
 def download_exercise_tcx(
     exercise_id: str,
-    polar_user_id: int,
     access_token: str,
     output_dir: Path,
+    name: str,
+    height: float,
+    weight: float,
+    hr_max: int,
+    hr_sit: int,
+    vo2max: int,
     api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None,
     start_time: Optional[str] = None
 ) -> Optional[pd.DataFrame]:
     """Download and parse TCX data for an exercise.
     
     Uses convert_tcx_to_csv to convert TCX to Polar-compatible CSV format.
-    Fetches user info to obtain parameters like weight, height, and hr_max.
+    User info parameters must be provided (fetched once before calling this function).
     
     Args:
         exercise_id: Exercise ID to download
-        polar_user_id: Polar user ID
         access_token: OAuth access token
         output_dir: Directory to save CSV output
+        name: User name for CSV metadata
+        height: User height in cm
+        weight: User weight in kg
+        hr_max: Maximum heart rate
+        hr_sit: Resting heart rate
+        vo2max: VO2max value
         api_base: Polar API base URL
-        db_path: Path to DuckDB database for user info caching
         start_time: Start time from exercise listing API (local time).
                    If provided, this is used for workoutId and CSV metadata
                    instead of the UTC time in the TCX file.
@@ -1310,29 +1318,10 @@ def download_exercise_tcx(
         "Accept": "application/json"
     }
     
-    # Fetch user info to get parameters for CSV conversion
-    print("\nFetching user info for conversion parameters...")
-    user_info = get_user_info(polar_user_id, access_token, api_base, db_path=db_path)
-    
-    # Extract user name with default
-    name = "Anton Antonov "  # Default
-    if user_info and 'first-name' in user_info and 'last-name' in user_info:
-        name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
-        print(f"✓ User name: {name.strip()}")
-    
-    # Get physical information using dedicated function
-    physical_info = get_physical_info(polar_user_id, access_token, api_base, db_path=db_path)
-    
-    # Extract parameters from physical_info
-    weight = physical_info.get('weight', 0.0)
-    height = physical_info.get('height', 0.0)
-    hr_max = physical_info.get('maximum-heart-rate', 0)
-    hr_sit = physical_info.get('resting-heart-rate', 0)
-    vo2max = physical_info.get('vo2-max', 0)
-    
     # Parse start_time to generate date/time strings for CSV metadata and filename
     override_date_str = None
     override_time_str = None
+    workout_id = None
     csv_filename = f"polar_latest_exercise_{exercise_id}.csv"  # fallback name
     
     if start_time:
@@ -1350,11 +1339,14 @@ def download_exercise_tcx(
             override_date_str = parsed_dt.strftime('%d-%m-%Y')
             override_time_str = parsed_dt.strftime('%H:%M:%S')
             
+            # Generate workoutId: DD-MM-YYYY_HHMMSS
+            workout_id = f"{parsed_dt.strftime('%d-%m-%Y')}_{parsed_dt.strftime('%H%M%S')}"
+            
             # Generate filename: Anton_Antonov_yyyy-mm-dd_HHMMSS_tcx_convert.CSV
             csv_filename = f"Anton_Antonov_{parsed_dt.strftime('%Y-%m-%d')}_{parsed_dt.strftime('%H%M%S')}_tcx_convert.CSV"
-            print(f"✓ Using start time from exercise listing: {start_time}")
+            print(f"✅ Using start time from exercise listing: {start_time}")
         except Exception as e:
-            print(f"⚠ Could not parse start_time '{start_time}': {e}")
+            print(f"⚠️  Could not parse start_time '{start_time}': {e}")
             print("  Falling back to TCX file timestamps")
     
     # Fetch TCX for exercise
@@ -1364,12 +1356,12 @@ def download_exercise_tcx(
     tcx_resp = requests.get(tcx_url, headers=tcx_headers)
 
     if tcx_resp.status_code != 200:
-        print(f"❌ Failed to fetch TCX: {tcx_resp.status_code}")
+        print(f"❌ Failed to fetch TCX for exercise {exercise_id}: {tcx_resp.status_code}")
         snippet = tcx_resp.text[:500] if hasattr(tcx_resp, 'text') else b""
         print(f"   Response: {snippet}...")
         return None
     
-    print("✓ TCX downloaded")
+    print("✅ TCX downloaded")
     
     # Save TCX file (kept for reference, not deleted)
     output_dir.mkdir(exist_ok=True)
@@ -1377,7 +1369,7 @@ def download_exercise_tcx(
     
     with open(tcx_path, 'wb') as f:
         f.write(tcx_resp.content)
-    print(f"✓ TCX saved: {tcx_path}")
+    print(f"✅ TCX saved: {tcx_path}")
     
     # Convert TCX to CSV using convert_tcx_to_csv
     csv_path = output_dir / csv_filename
@@ -1397,9 +1389,9 @@ def download_exercise_tcx(
     
     # Read the CSV and return as DataFrame
     df_csv = pd.read_csv(csv_path, skiprows=2)  # Skip metadata rows
-    print(f"✓ CSV saved: {csv_path}")
-    print("\nSample:")
-    print(df_csv.head(10))
+    print(f"✅ CSV saved: {csv_path}")
+    if workout_id:
+        print(f"✅ WorkoutId: {workout_id}")
     
     return df_csv
 
@@ -1458,33 +1450,33 @@ def run_validation_checks(
 
     # Check 1: Tokens file exists
     if tokens_file.exists():
-        print("✓ Tokens file exists")
+        print("✅ Tokens file exists")
         
         # Check 2: Tokens file is valid JSON
         try:
             tokens = load_tokens(tokens_file)
-            print("✓ Tokens file is valid JSON")
+            print("✅ Tokens file is valid JSON")
             
             # Check 3: Required fields present
             required_fields = ['access_token', 'token_type']
             for field in required_fields:
                 if field in tokens and tokens[field]:
-                    print(f"✓ Field '{field}' present")
+                    print(f"✅ Field '{field}' present")
                 else:
                     print(f"❌ Field '{field}' missing or empty")
                     validation_passed = False
             
             # Check 4: Optional refresh_token
             if 'refresh_token' in tokens and tokens['refresh_token']:
-                print(f"✓ Refresh token available")
+                print(f"✅ Refresh token available")
             else:
-                print(f"ℹ Refresh token not available (optional)")
+                print(f"⚠️ Refresh token not available (optional)")
             
             # Check 5: Token format (basic validation)
             if len(tokens['access_token']) > 10:
-                print(f"✓ Access token format looks valid")
+                print(f"✅ Access token format looks valid")
             else:
-                print(f"⚠ Access token seems too short")
+                print(f"⚠️  Access token seems too short")
                 validation_passed = False
                 
         except json.JSONDecodeError:
@@ -1498,7 +1490,7 @@ def run_validation_checks(
     # Check 6: Environment variables
     for var in required_env_vars:
         if os.getenv(var):
-            print(f"✓ Environment variable {var} is set")
+            print(f"✅ Environment variable {var} is set")
         else:
             print(f"❌ Environment variable {var} is not set")
             validation_passed = False
@@ -1506,9 +1498,9 @@ def run_validation_checks(
     # Summary
     print("\n" + "="*80)
     if validation_passed:
-        print("✓ ALL VALIDATION CHECKS PASSED")
+        print("✅ ALL VALIDATION CHECKS PASSED")
     else:
-        print("⚠ SOME VALIDATION CHECKS FAILED")
+        print("⚠️  SOME VALIDATION CHECKS FAILED")
     print("="*80)
     
     return validation_passed
@@ -1560,11 +1552,11 @@ def run_polar_workflow(
     # Step 2: Check token validity and authorize if needed
     print("Step 2: Checking token validity...")
     if is_token_valid(tokens_file):
-        print("✓ Valid token found")
+        print("✅ Valid token found")
         tokens = load_tokens(tokens_file)
         access_token = tokens['access_token']
     else:
-        print("⚠ No valid token found. Starting authorization flow...")
+        print("⚠️  No valid token found. Starting authorization flow...")
         print()
         
         # Run authorization flow
@@ -1635,7 +1627,27 @@ def run_polar_workflow(
         new_exercises = filter_new_exercises(exercises, db_path)
         
         if new_exercises:
-            print(f"\n✓ Found {len(new_exercises)} new exercise(s) to download")
+            print(f"\n✅ Found {len(new_exercises)} new exercise(s) to download")
+            
+            # Fetch user info ONCE before processing exercises
+            print("\nFetching user info for CSV conversion parameters...")
+            user_info = get_user_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            
+            # Extract user name with default
+            name = "Anton Antonov "  # Default
+            if user_info and 'first-name' in user_info and 'last-name' in user_info:
+                name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
+                print(f"✅ User name: {name.strip()}")
+            
+            # Get physical information using dedicated function
+            physical_info = get_physical_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            
+            # Extract parameters from physical_info
+            weight = physical_info.get('weight', 0.0)
+            height = physical_info.get('height', 0.0)
+            hr_max = physical_info.get('maximum-heart-rate', 0)
+            hr_sit = physical_info.get('resting-heart-rate', 0)
+            vo2max = physical_info.get('vo2-max', 0)
             
             for i, exercise in enumerate(new_exercises, 1):
                 exercise_id = get_field(exercise, 'id', 'exercise_id')
@@ -1648,24 +1660,28 @@ def run_polar_workflow(
                 # Download TCX and convert to CSV
                 tcx_dataframe = download_exercise_tcx(
                     exercise_id=exercise_id,
-                    polar_user_id=polar_user_id,
                     access_token=access_token,
                     output_dir=output_dir,
+                    name=name,
+                    height=height,
+                    weight=weight,
+                    hr_max=hr_max,
+                    hr_sit=hr_sit,
+                    vo2max=vo2max,
                     api_base=config['API_BASE'],
-                    db_path=db_path,
                     start_time=start_time
                 )
                 
                 if tcx_dataframe is not None:
                     tcx_dataframes.append(tcx_dataframe)
         else:
-            print("\nℹ All exercises are already in the database. Nothing new to download.")
+            print("\n⚠️ All exercises are already in the database. Nothing new to download.")
     else:
-        print("ℹ No exercises available to download.")
+        print("⚠️ No exercises available to download.")
     
     print()
     print("="*80)
-    print("✓ WORKFLOW COMPLETE")
+    print("✅ WORKFLOW COMPLETE")
     if tcx_dataframes:
         print(f"  Downloaded {len(tcx_dataframes)} new exercise(s)")
     print("="*80)

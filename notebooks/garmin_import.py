@@ -6,7 +6,13 @@ This module provides helpers for:
 - Batch importing FIT files from directories
 
 The functions extract the first GPS coordinate and elevation found in each workout
-and create a table with schema: workoutId, latitude, longitude, elevation.
+and create a table with schema:
+- workoutId (VARCHAR PRIMARY KEY): Unique workout identifier
+- latitude (DOUBLE): First GPS latitude in degrees
+- longitude (DOUBLE): First GPS longitude in degrees  
+- elevation (DOUBLE): First elevation/altitude in meters
+- start_time (TIMESTAMP): Workout start time
+- source_file (VARCHAR): Original FIT filename
 """
 from __future__ import annotations
 
@@ -460,8 +466,10 @@ def list_garmin_workouts(
     
     try:
         con = duckdb.connect(str(db_path))
+        # Use parameterized query to prevent SQL injection
         results = con.execute(
-            f"SELECT * FROM garmin_gps_data ORDER BY start_time DESC LIMIT {limit}"
+            "SELECT * FROM garmin_gps_data ORDER BY start_time DESC LIMIT ?",
+            (limit,)
         ).fetchall()
         
         columns = ['workoutId', 'latitude', 'longitude', 'elevation', 'start_time', 'source_file']

@@ -62,12 +62,33 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
   - `hr-plotting-v0.1.ipynb` – **DEPRECATED**: Do not use or modify. Kept only for educational purposes for human developers.
   - `calories_calculator.ipynb` – calorie-related analysis.
   - `polar_accesslink_workflow.ipynb` – Polar AccessLink API integration.
+- **Polar AccessLink Modules** (in `notebooks/`):
+  - `workflow_tools.py` – Main entry point, re-exports all functions from submodules.
+  - `tokens.py` – Token management (save, load, exchange, refresh OAuth tokens, token validation).
+  - `users.py` – User management (registration, physical info, database caching).
+  - `oauth.py` – OAuth callback server and authorization flow.
+  - `tcx_converter.py` – TCX to Polar-compatible CSV conversion.
+  - `exercises.py` – Exercise listing, TCX download, filtering new exercises.
+  - `validation.py` – Environment and configuration validation.
+  - `azure_storage.py` – Azure Blob Storage upload (optional).
+  - `common_tools.py` – Shared utility functions (get_field).
+  - `config.py` – Configuration loading from environment variables.
 - **Scripts**:
   - `scripts/run_duckdb_local.sh` – copies database to temp folder and launches DuckDB web UI (`duckdb -ui`).
 - **Data directories**:
   - `hr_data/` – workout CSVs, database files, zones.csv.
   - `data/` – VO2max data and other reference files.
 - Keep this doc concise; replace outdated sections instead of appending noise.
+
+## 8.1 Azure Storage Configuration (Optional)
+To enable automatic upload of workout CSVs to Azure Blob Storage:
+1. Install Azure SDK: `pip install azure-storage-blob azure-identity`
+2. Set environment variables:
+   - `AZURE_STORAGE_ENABLED=true`
+   - `AZURE_STORAGE_ACCOUNT_NAME=<your-storage-account>`
+   - `AZURE_STORAGE_CONTAINER_NAME=workout-data` (optional, default: 'workout-data')
+3. Authenticate via `az login` (local) or Managed Identity (Azure cloud)
+4. The workflow will automatically upload CSVs after download.
 
 ## 9. Quick Reference Snippets
 ```python

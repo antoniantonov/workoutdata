@@ -1,7 +1,7 @@
 """Configuration management for workout data project.
 
 This module centralizes all configuration loading from environment variables,
-including paths, database connections, and API credentials.
+including paths, database connections, API credentials, and Azure Storage settings.
 """
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ def load_configuration() -> Dict[str, object]:
     - Database paths
     - File paths for tokens and data files
     - Output directories
+    - Azure Storage settings (optional)
     
     Returns:
         Dict containing all configuration values:
@@ -35,6 +36,11 @@ def load_configuration() -> Dict[str, object]:
             - DUCKDB_PATH: Path to DuckDB database file
             - VO2MAX_DATA_PATH: Path to VO2max data CSV file
             - OUTPUT_DIR: Directory for output files (TCX, CSV exports)
+            
+            Azure Storage (optional):
+            - AZURE_STORAGE_ENABLED: Whether Azure Storage upload is enabled
+            - AZURE_STORAGE_ACCOUNT_NAME: Azure Storage account name
+            - AZURE_STORAGE_CONTAINER_NAME: Blob container name (default: 'workout-data')
     
     Raises:
         ValueError: If required environment variables are missing
@@ -116,6 +122,13 @@ def load_configuration() -> Dict[str, object]:
     # Ensure output directory exists
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    # =============================================================================
+    # Azure Storage Configuration (optional)
+    # =============================================================================
+    AZURE_STORAGE_ENABLED = os.getenv('AZURE_STORAGE_ENABLED', 'false').lower() == 'true'
+    AZURE_STORAGE_ACCOUNT_NAME = os.getenv('AZURE_STORAGE_ACCOUNT_NAME')
+    AZURE_STORAGE_CONTAINER_NAME = os.getenv('AZURE_STORAGE_CONTAINER_NAME', 'workout-data')
+
     print(f"✓ Configuration loaded")
     print(f"  - Client ID: {CLIENT_ID[:8]}...")
     print(f"  - Redirect Port: {REDIRECT_PORT}")
@@ -124,6 +137,10 @@ def load_configuration() -> Dict[str, object]:
     print(f"  - Tokens File: {TOKENS_FILE}")
     print(f"  - VO2max Data: {VO2MAX_DATA_PATH}")
     print(f"  - Output Dir: {OUTPUT_DIR}")
+    if AZURE_STORAGE_ENABLED:
+        print(f"  - Azure Storage: {AZURE_STORAGE_ACCOUNT_NAME}/{AZURE_STORAGE_CONTAINER_NAME}")
+    else:
+        print(f"  - Azure Storage: Disabled")
 
     return {
         # Polar API
@@ -141,6 +158,11 @@ def load_configuration() -> Dict[str, object]:
         'DUCKDB_PATH': DUCKDB_PATH,
         'VO2MAX_DATA_PATH': VO2MAX_DATA_PATH,
         'OUTPUT_DIR': OUTPUT_DIR,
+
+        # Azure Storage (optional)
+        'AZURE_STORAGE_ENABLED': AZURE_STORAGE_ENABLED,
+        'AZURE_STORAGE_ACCOUNT_NAME': AZURE_STORAGE_ACCOUNT_NAME,
+        'AZURE_STORAGE_CONTAINER_NAME': AZURE_STORAGE_CONTAINER_NAME,
     }
 
 

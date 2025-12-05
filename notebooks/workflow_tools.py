@@ -1,1514 +1,87 @@
 """Workflow tools for Polar AccessLink OAuth and Exercise Management.
 
-This module contains all helper functions extracted from the polar_accesslink_workflow.ipynb
-notebook. It provides utilities for:
-- OAuth token management (save, load, exchange, refresh)
-- Authorization code capture via local callback server
-- User registration and info retrieval
-- Exercise listing and TCX data export
-- Validation checks
+This module serves as the main entry point and re-exports all functionality
+from the refactored submodules:
+- tokens: Token management (save, load, exchange, refresh)
+- users: User management (registration, info, physical info, database)
+- oauth: OAuth callback server and authorization flow
+- tcx_converter: TCX to CSV conversion
+- exercises: Exercise listing and downloading
+- validation: Token and environment validation
+- azure_storage: Azure Blob Storage upload functionality
 
-All functions maintain the exact logic from the original notebook cells.
+All functions maintain backward compatibility with the original module.
 """
 from __future__ import annotations
 
-import base64
-import json
-import os
-import secrets
-import threading
-import xml.etree.ElementTree as ET
-from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, urlencode, urlparse
-
-import duckdb  # type: ignore
-import pandas as pd  # type: ignore
-import requests  # type: ignore
-
+# Re-export configuration
 from config import load_configuration
 
-# =============================================================================
-# Configuration and Constants
-# =============================================================================
-# load_configuration is now imported from config.py module
+# Re-export token management
+from tokens import (
+    save_tokens,
+    load_tokens,
+    encode_credentials,
+    exchange_code_for_token,
+    refresh_access_token,
+)
+
+# Re-export user management
+from users import (
+    ensure_userinfo_table,
+    get_userinfo_from_db,
+    save_userinfo_to_db,
+    get_default_physical_info,
+    generate_workout_id_from_start_time,
+    get_existing_workout_ids,
+    get_user_info,
+    register_user,
+    get_physical_info,
+)
+
+# Re-export OAuth flow
+from oauth import (
+    create_callback_handler,
+    start_callback_server,
+    run_authorization_flow,
+    complete_token_exchange,
+)
+
+# Re-export TCX conversion
+from tcx_converter import convert_tcx_to_csv
+
+# Re-export exercise management
+from exercises import (
+    normalize_start_time,
+    list_exercises,
+    display_exercises,
+    download_exercise_tcx,
+    filter_new_exercises,
+)
+
+# Re-export common tools
+from common_tools import get_field
+
+# Re-export validation
+from validation import run_validation_checks
+
+# Re-export token validation (now in tokens module)
+from tokens import is_token_valid
+
+# Re-export Azure Storage (optional)
+from azure_storage import (
+    is_azure_storage_enabled,
+    get_azure_storage_config,
+    upload_csv_to_azure,
+    upload_workout_csv,
+    list_workout_blobs,
+    AZURE_SDK_AVAILABLE,
+)
+
+# Standard library imports needed for run_polar_workflow
+from pathlib import Path
+from typing import Dict
 
-
-# =============================================================================
-# Token Management Functions
-# =============================================================================
-
-def save_tokens(
-    access_token: str,
-    refresh_token: Optional[str] = None,
-    token_type: str = "Bearer",
-    tokens_file: Path = Path("tokens_polar.json")
-) -> None:
-    """Save tokens to JSON file (gitignored).
-    
-    Args:
-        access_token: OAuth access token
-        refresh_token: Optional OAuth refresh token
-        token_type: Token type (default: "Bearer")
-        tokens_file: Path to token storage file (default: tokens_polar.json)
-    """
-    tokens = {
-        "access_token": access_token,
-        "refresh_token": refresh_token,
-        "token_type": token_type
-    }
-    with open(tokens_file, 'w') as f:
-        json.dump(tokens, f, indent=2)
-    print(f"✅ Tokens saved to {tokens_file}")
-
-
-def load_tokens(tokens_file: Path = Path("tokens_polar.json")) -> Optional[Dict[str, str]]:
-    """Load tokens from JSON file.
-    
-    Args:
-        tokens_file: Path to token storage file (default: tokens_polar.json)
-    
-    Returns:
-        Dictionary containing tokens, or None if file doesn't exist
-    """
-    if not tokens_file.exists():
-        return None
-    with open(tokens_file, 'r') as f:
-        tokens = json.load(f)
-    return tokens
-
-
-def encode_credentials(client_id: str, client_secret: str) -> str:
-    """Encode credentials in Base64 for Basic Auth.
-    
-    Args:
-        client_id: Polar API client ID
-        client_secret: Polar API client secret
-    
-    Returns:
-        Base64-encoded credentials string
-    """
-    credentials = f"{client_id}:{client_secret}"
-    encoded = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
-    return encoded
-
-
-def exchange_code_for_token(
-    auth_code: str,
-    redirect_uri: str,
-    client_id: str,
-    client_secret: str,
-    token_url: str = "https://polarremote.com/v2/oauth2/token"
-) -> Dict[str, object]:
-    """Exchange authorization code for access and refresh tokens.
-    
-    CRITICAL: redirect_uri must EXACTLY match what was used in authorization request.
-    
-    Args:
-        auth_code: Authorization code from OAuth callback
-        redirect_uri: Redirect URI (must match the one used in authorization)
-        client_id: Polar API client ID
-        client_secret: Polar API client secret
-        token_url: Token exchange endpoint URL
-    
-    Returns:
-        Dictionary containing token response (access_token, refresh_token, etc.)
-    
-    Raises:
-        Exception: If token exchange fails
-    """
-    print(f"Exchanging authorization code for tokens...")
-    print(f"  Using redirect_uri: {redirect_uri}")
-    
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {encode_credentials(client_id, client_secret)}"
-    }
-    
-    data = {
-        "grant_type": "authorization_code",
-        "code": auth_code,
-        "redirect_uri": redirect_uri  # MUST match authorization request
-    }
-    
-    response = requests.post(token_url, headers=headers, data=data)
-    
-    if response.status_code != 200:
-        print(f"❌ Token exchange failed: {response.status_code}")
-        print(f"   Response: {response.text}")
-        raise Exception(f"Token exchange failed: {response.text}")
-    
-    token_data = response.json()
-    print("✅ Token exchange successful")
-    return token_data
-
-
-def refresh_access_token(
-    refresh_token: str,
-    client_id: str,
-    client_secret: str,
-    token_url: str = "https://polarremote.com/v2/oauth2/token"
-) -> Dict[str, object]:
-    """Refresh access token using refresh token.
-    
-    Args:
-        refresh_token: OAuth refresh token
-        client_id: Polar API client ID
-        client_secret: Polar API client secret
-        token_url: Token exchange endpoint URL
-    
-    Returns:
-        Dictionary containing token response with new access_token
-    
-    Raises:
-        Exception: If token refresh fails
-    """
-    print("Refreshing access token...")
-    
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Authorization": f"Basic {encode_credentials(client_id, client_secret)}"
-    }
-    
-    data = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_token
-    }
-    
-    response = requests.post(token_url, headers=headers, data=data)
-    
-    if response.status_code != 200:
-        print(f"❌ Token refresh failed: {response.status_code}")
-        print(f"   Response: {response.text}")
-        raise Exception(f"Token refresh failed: {response.text}")
-    
-    token_data = response.json()
-    print("✅ Token refresh successful")
-    return token_data
-
-
-# =============================================================================
-# User Info Database Management
-# =============================================================================
-
-def ensure_userinfo_table(db_path: Path) -> None:
-    """Ensure the userinfo table exists in the database.
-    
-    Creates the userinfo table with schema for storing user profile information
-    from both get_user_info and get_physical_info API calls.
-    
-    Args:
-        db_path: Path to DuckDB database file
-    """
-    con = duckdb.connect(str(db_path))
-    try:
-        con.execute("""
-        CREATE TABLE IF NOT EXISTS userinfo (
-            polar_user_id INTEGER PRIMARY KEY,
-            first_name VARCHAR,
-            last_name VARCHAR,
-            birthdate VARCHAR,
-            gender VARCHAR,
-            weight FLOAT,
-            height FLOAT,
-            maximum_heart_rate INTEGER,
-            resting_heart_rate INTEGER,
-            aerobic_threshold INTEGER,
-            anaerobic_threshold INTEGER,
-            vo2_max FLOAT,
-            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-        print("✅ Userinfo table ensured")
-    finally:
-        con.close()
-
-
-def get_userinfo_from_db(db_path: Path, polar_user_id: int) -> Optional[Dict[str, object]]:
-    """Retrieve user info from database.
-    
-    Args:
-        db_path: Path to DuckDB database file
-        polar_user_id: Polar user ID
-    
-    Returns:
-        Dictionary with user info, or None if not found
-    """
-    con = duckdb.connect(str(db_path))
-    try:
-        result = con.execute(
-            "SELECT * FROM userinfo WHERE polar_user_id = ?",
-            (polar_user_id,)
-        ).fetchone()
-        
-        if result:
-            columns = [desc[0] for desc in con.description]
-            return dict(zip(columns, result))
-        return None
-    except Exception as e:
-        print(f"⚠️  Error reading from userinfo table: {e}")
-        return None
-    finally:
-        con.close()
-
-
-def save_userinfo_to_db(db_path: Path, user_data: Dict[str, object]) -> None:
-    """Save or update user info in database.
-    
-    Args:
-        db_path: Path to DuckDB database file
-        user_data: Dictionary with user information (must include polar_user_id)
-    """
-    if 'polar_user_id' not in user_data:
-        print("⚠️  Cannot save userinfo: polar_user_id missing")
-        return
-    
-    ensure_userinfo_table(db_path)
-    
-    con = duckdb.connect(str(db_path))
-    try:
-        # Upsert: Delete old record if exists, then insert new
-        con.execute(
-            "DELETE FROM userinfo WHERE polar_user_id = ?",
-            (user_data['polar_user_id'],)
-        )
-        
-        # Build insert statement dynamically based on available fields
-        fields = list(user_data.keys())
-        placeholders = ', '.join(['?' for _ in fields])
-        field_names = ', '.join(fields)
-        
-        con.execute(
-            f"INSERT INTO userinfo ({field_names}, last_updated) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
-            tuple(user_data[f] for f in fields)
-        )
-        print(f"✅ Userinfo saved to database for user {user_data['polar_user_id']}")
-    except Exception as e:
-        print(f"⚠️  Error saving to userinfo table: {e}")
-    finally:
-        con.close()
-
-
-def get_default_physical_info() -> Dict[str, object]:
-    """Get hardcoded default physical info values.
-    
-    Returns:
-        Dictionary with default physical information
-    """
-    return {
-        'weight': 78.0,
-        'height': 175.0,
-        'maximum_heart_rate': 188,
-        'resting_heart_rate': 55,
-        'aerobic_threshold': 140,
-        'anaerobic_threshold': 165,
-        'vo2_max': 58.0
-    }
-
-
-def generate_workout_id_from_start_time(start_time_str: str) -> str:
-    """Generate workoutId from exercise start time string.
-    
-    Converts start time from Polar API format to workoutId format.
-    
-    Args:
-        start_time_str: Start time string from Polar API (e.g., "2025-05-11T10:59:46.000")
-    
-    Returns:
-        WorkoutId in format "DD-MM-YYYY_HHMMSS" (e.g., "11-05-2025_105946")
-    """
-    from datetime import datetime
-    
-    # Handle various formats from Polar API
-    # Remove timezone info if present
-    clean_time = start_time_str.replace('Z', '').replace('+00:00', '')
-    
-    # Try parsing with milliseconds first, then without
-    for fmt in ['%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S']:
-        try:
-            dt = datetime.fromisoformat(clean_time)
-            break
-        except ValueError:
-            continue
-    else:
-        # Fallback: try direct parsing
-        dt = datetime.fromisoformat(clean_time)
-    
-    # Format: DD-MM-YYYY_HHMMSS
-    return dt.strftime('%d-%m-%Y_%H%M%S')
-
-
-def get_existing_workout_ids(db_path: Path) -> set:
-    """Get set of existing workout IDs from the database.
-    
-    Args:
-        db_path: Path to DuckDB database file
-    
-    Returns:
-        Set of workout IDs that already exist in workout_metadata table
-    """
-    existing_ids = set()
-    
-    try:
-        con = duckdb.connect(str(db_path))
-        try:
-            # Check if table exists
-            result = con.execute("""
-                SELECT table_name FROM information_schema.tables 
-                WHERE table_name = 'workout_metadata'
-            """).fetchone()
-            
-            if result:
-                # Get all existing workout IDs
-                rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
-                existing_ids = {row[0] for row in rows}
-                print(f"✅ Found {len(existing_ids)} existing workouts in database")
-            else:
-                print("⚠️ workout_metadata table does not exist yet")
-        finally:
-            con.close()
-    except Exception as e:
-        print(f"⚠️  Error checking existing workouts: {e}")
-    
-    return existing_ids
-
-
-def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Path) -> List[Dict[str, object]]:
-    """Filter exercises to only include those not already in the database.
-    
-    Args:
-        exercises: List of exercise dictionaries from Polar API
-        db_path: Path to DuckDB database file
-    
-    Returns:
-        List of exercises that don't have a corresponding workoutId in the database
-    """
-    existing_ids = get_existing_workout_ids(db_path)
-    
-    new_exercises = []
-    for ex in exercises:
-        start_time = get_field(ex, 'start_time', 'start-time', 'local_start_time')
-        if start_time:
-            workout_id = generate_workout_id_from_start_time(start_time)
-            if workout_id not in existing_ids:
-                new_exercises.append(ex)
-            else:
-                exercise_id = get_field(ex, 'id', 'exercise_id')
-                print(f"  ⏭ Skipping exercise {exercise_id} (workoutId {workout_id} already exists)")
-    
-    print(f"\n✅ Found {len(new_exercises)} new exercise(s) to import (out of {len(exercises)} total)")
-    return new_exercises
-
-
-# =============================================================================
-# User Management Functions
-# =============================================================================
-
-def get_user_info(
-    member_or_user_id: str,
-    access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None
-) -> Optional[Dict[str, object]]:
-    """Fetch user info from Polar API to get polar-user-id.
-    
-    Args:
-        member_or_user_id: Member ID or user ID to fetch info for
-        access_token: OAuth access token
-        api_base: Polar API base URL
-        db_path: Optional path to DuckDB database for saving user info
-    
-    Returns:
-        Dictionary containing user info, or None if request fails
-    """
-    print(f"Fetching user info for ID: {member_or_user_id}...")
-    
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json"
-    }
-    
-    response = requests.get(f"{api_base}/users/{member_or_user_id}", headers=headers)
-    
-    if response.status_code == 200:
-        user_info = response.json()
-        print(f"✅ User info retrieved")
-        
-        # Save to database if db_path provided
-        if db_path and 'polar-user-id' in user_info:
-            user_data = {
-                'polar_user_id': int(user_info['polar-user-id']),
-                'first_name': user_info.get('first-name'),
-                'last_name': user_info.get('last-name'),
-                'birthdate': user_info.get('birthdate'),
-                'gender': user_info.get('gender')
-            }
-            # Remove None values
-            user_data = {k: v for k, v in user_data.items() if v is not None}
-            save_userinfo_to_db(db_path, user_data)
-        
-        return user_info
-    else:
-        print(f"⚠️  Failed to get user info: {response.status_code}")
-        return None
-
-
-def register_user(
-    access_token: str,
-    member_id: Optional[str] = None,
-    api_base: str = "https://www.polaraccesslink.com/v3"
-) -> Optional[int]:
-    """Register user with Polar AccessLink API (idempotent).
-    
-    Handles both new registration (201) and already registered (409) cases.
-    
-    Args:
-        access_token: OAuth access token
-        member_id: Optional Polar member ID
-        api_base: Polar API base URL
-    
-    Returns:
-        polar_user_id if successful, None otherwise
-    
-    Raises:
-        Exception: If registration fails with unexpected status code
-    """
-    print("Registering user...")
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    # Prepare registration payload
-    registration_data = {}
-    if member_id:
-        registration_data["member-id"] = member_id
-
-    response = requests.post(
-        f"{api_base}/users",
-        headers=headers,
-        json=registration_data
-    )
-
-    polar_user_id = None
-
-    if response.status_code == 201:
-        # Successfully registered
-        user_data = response.json()
-        polar_user_id = user_data.get('polar-user-id')
-        print(f"✅ User registered successfully")
-        print(f"  Polar User ID: {polar_user_id}")
-        
-    elif response.status_code == 409:
-        # User already registered
-        print("⚠️ User already registered (409 Conflict)")
-        
-        # Fetch user info to get polar-user-id
-        user_id_to_fetch = member_id if member_id else "self"
-        user_info = get_user_info(user_id_to_fetch, access_token, api_base)
-        
-        if user_info:
-            polar_user_id = user_info.get('polar-user-id')
-            print(f"✅ Retrieved Polar User ID: {polar_user_id}")
-        else:
-            print("⚠️  Could not retrieve polar-user-id, will attempt to continue")
-            
-    else:
-        print(f"❌ User registration failed: {response.status_code}")
-        print(f"   Response: {response.text}")
-        raise Exception(f"User registration failed: {response.text}")
-
-    print(f"\n✅ User registration complete. Polar User ID: {polar_user_id or 'Unknown'}")
-    return polar_user_id
-
-
-# =============================================================================
-# OAuth Callback Server
-# =============================================================================
-
-def create_callback_handler(state_token: str, result_storage: Dict[str, Optional[str]]):
-    """Factory function to create OAuth callback handler class.
-    
-    Args:
-        state_token: CSRF protection token
-        result_storage: Dictionary to store authorization code or error
-    
-    Returns:
-        CallbackHandler class configured with state token and result storage
-    """
-    class CallbackHandler(BaseHTTPRequestHandler):
-        """HTTP request handler for OAuth callback."""
-        
-        def log_message(self, format, *args):
-            """Suppress default logging."""
-            pass
-        
-        def do_GET(self):
-            # Parse query parameters
-            parsed_path = urlparse(self.path)
-            query_params = parse_qs(parsed_path.query)
-            
-            # Validate state token
-            received_state = query_params.get('state', [None])[0]
-            if received_state != state_token:
-                result_storage['auth_error'] = "State token mismatch - possible CSRF attack"
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Error: Invalid state token")
-                return
-            
-            # Check for error
-            if 'error' in query_params:
-                result_storage['auth_error'] = query_params.get('error_description', [query_params['error'][0]])[0]
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(f"Error: {result_storage['auth_error']}".encode())
-                return
-            
-            # Extract authorization code
-            if 'code' in query_params:
-                result_storage['auth_code'] = query_params['code'][0]
-                self.send_response(200)
-                self.send_header('Content-type', 'text/html')
-                self.end_headers()
-                html = """
-                <html>
-                <head><title>Authorization Successful</title></head>
-                <body style="font-family: sans-serif; text-align: center; padding: 50px;">
-                    <h1 style="color: green;">Authorization Successful!</h1>
-                    <p>You can close this window and return to the notebook.</p>
-                </body>
-                </html>
-                """
-                self.wfile.write(html.encode())
-            else:
-                result_storage['auth_error'] = "No authorization code received"
-                self.send_response(400)
-                self.end_headers()
-                self.wfile.write(b"Error: No authorization code")
-    
-    return CallbackHandler
-
-
-def start_callback_server(
-    port: int,
-    allow_port_fallback: bool = True
-) -> Tuple[int, threading.Thread, str, Dict[str, Optional[str]]]:
-    """Start local callback server and return the actual port used.
-    
-    Args:
-        port: Desired port number
-        allow_port_fallback: Whether to try alternative ports if requested port is busy
-    
-    Returns:
-        Tuple containing:
-            - actual_port: Port number the server is running on
-            - server_thread: Thread running the server
-            - redirect_uri: Full redirect URI for OAuth
-            - result_storage: Dictionary to check for auth_code or auth_error
-    
-    Raises:
-        RuntimeError: If no port is available
-    """
-    result_storage: Dict[str, Optional[str]] = {
-        'auth_code': None,
-        'auth_error': None
-    }
-    state_token = secrets.token_urlsafe(32)
-    
-    CallbackHandler = create_callback_handler(state_token, result_storage)
-    
-    server = None
-    actual_port = port
-    
-    # Try to bind to requested port
-    try:
-        server = HTTPServer(('localhost', port), CallbackHandler)
-        actual_port = port
-    except OSError as e:
-        if not allow_port_fallback:
-            raise RuntimeError(
-                f"Port {port} is not available and ALLOW_PORT_FALLBACK is False. \n"
-                f"Please free port {port} or set ALLOW_PORT_FALLBACK=true"
-            ) from e
-        
-        # Try to find an available port
-        print(f"⚠️  Port {port} is busy, trying to find an available port...")
-        for try_port in range(port + 1, port + 100):
-            try:
-                server = HTTPServer(('localhost', try_port), CallbackHandler)
-                actual_port = try_port
-                print(f"✅ Using fallback port: {actual_port}")
-                break
-            except OSError:
-                continue
-        
-        if server is None:
-            raise RuntimeError("Could not find an available port")
-    
-    redirect_uri = f"http://localhost:{actual_port}/callback"
-    print(f"✅ Callback server ready at: {redirect_uri}")
-    
-    # Start server in background thread
-    def serve():
-        while result_storage['auth_code'] is None and result_storage['auth_error'] is None:
-            server.handle_request()
-        server.server_close()
-    
-    server_thread = threading.Thread(target=serve, daemon=True)
-    server_thread.start()
-    
-    result_storage['state_token'] = state_token
-    
-    return actual_port, server_thread, redirect_uri, result_storage
-
-
-def run_authorization_flow(
-    client_id: str,
-    redirect_port: int,
-    allow_port_fallback: bool = True,
-    auth_url: str = "https://flow.polar.com/oauth2/authorization",
-    timeout: int = 300
-) -> Tuple[str, str]:
-    """Run complete OAuth authorization flow with local callback server.
-    
-    Args:
-        client_id: Polar API client ID
-        redirect_port: Port for callback server
-        allow_port_fallback: Whether to try alternative ports
-        auth_url: Authorization endpoint URL
-        timeout: Timeout in seconds (default: 300 = 5 minutes)
-    
-    Returns:
-        Tuple of (auth_code, redirect_uri)
-    
-    Raises:
-        Exception: If authorization fails or times out
-    """
-    # Start callback server
-    print("Starting local callback server...")
-    actual_port, server_thread, redirect_uri, result_storage = start_callback_server(
-        redirect_port,
-        allow_port_fallback
-    )
-
-    # Build authorization URL
-    auth_params = {
-        "response_type": "code",
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "state": result_storage['state_token']
-    }
-    authorization_url = f"{auth_url}?{urlencode(auth_params)}"
-
-    print("\n" + "="*80)
-    print("AUTHORIZATION REQUIRED")
-    print("="*80)
-    print(f"\n1. Click this URL to authorize:\n\n   {authorization_url}\n")
-    print("2. Log in to Polar and authorize this application")
-    print("3. You will be redirected back to localhost")
-    print("4. Wait for authorization code to be captured...\n")
-    print("="*80 + "\n")
-
-    # Wait for authorization code
-    server_thread.join(timeout=timeout)
-
-    if result_storage['auth_error']:
-        print(f"\n❌ Authorization failed: {result_storage['auth_error']}")
-        raise Exception(f"Authorization failed: {result_storage['auth_error']}")
-    elif result_storage['auth_code']:
-        print(f"\n✅ Authorization code captured: {result_storage['auth_code'][:8]}...")
-        print(f"✅ Redirect URI used: {redirect_uri}")
-        return result_storage['auth_code'], redirect_uri
-    else:
-        print("\n❌ Timeout waiting for authorization")
-        raise Exception("Authorization timeout")
-
-
-def complete_token_exchange(
-    auth_code: str,
-    redirect_uri: str,
-    client_id: str,
-    client_secret: str,
-    token_url: str = "https://polarremote.com/v2/oauth2/token",
-    tokens_file: Path = Path("tokens_polar.json")
-) -> Dict[str, object]:
-    """Exchange authorization code for tokens and save them.
-    
-    Args:
-        auth_code: Authorization code from OAuth callback
-        redirect_uri: Redirect URI used in authorization
-        client_id: Polar API client ID
-        client_secret: Polar API client secret
-        token_url: Token exchange endpoint URL
-        tokens_file: Path to save tokens
-    
-    Returns:
-        Dictionary containing token response
-    
-    Raises:
-        Exception: If authorization code or redirect URI is missing
-    """
-    if not auth_code:
-        raise Exception("No authorization code available. Please run authorization flow first.")
-
-    if not redirect_uri:
-        raise Exception("Redirect URI not set. Please run authorization flow first.")
-
-    # Exchange code for tokens
-    token_response = exchange_code_for_token(auth_code, redirect_uri, client_id, client_secret, token_url)
-
-    # Extract tokens
-    access_token = token_response.get('access_token')
-    refresh_token = token_response.get('refresh_token')
-    token_type = token_response.get('token_type', 'Bearer')
-    expires_in = token_response.get('expires_in')
-
-    # Save tokens to file
-    save_tokens(access_token, refresh_token, token_type, tokens_file)
-
-    # Display masked token info
-    print("\n" + "="*80)
-    print("TOKEN INFORMATION (masked)")
-    print("="*80)
-    print(f"Access Token:  {access_token[:8]}... (length: {len(access_token)})")
-    if refresh_token:
-        print(f"Refresh Token: {refresh_token[:8]}... (length: {len(refresh_token)})")
-    print(f"Token Type:    {token_type}")
-    if expires_in:
-        print(f"Expires In:    {expires_in} seconds ({expires_in//3600} hours)")
-    print("="*80 + "\n")
-    
-    return token_response
-
-
-# =============================================================================
-# TCX to CSV Conversion
-# =============================================================================
-
-def convert_tcx_to_csv(
-    tcx_path: Path,
-    output_csv_path: Path,
-    name: str,
-    height: float,
-    weight: float,
-    hr_max: int,
-    hr_sit: int,
-    vo2max: int,
-    override_date_str: Optional[str] = None,
-    override_time_str: Optional[str] = None
-) -> Path:
-    """Convert TCX file to Polar-compatible CSV format.
-    
-    The output CSV has two parts:
-    1. Metadata rows (2 rows): workout summary information
-    2. Time-series rows: per-second heart rate data with relative timestamps
-    
-    Args:
-        tcx_path: Path to input TCX file
-        output_csv_path: Optional path for output CSV (default: same name as TCX with .csv extension)
-        name: Athlete name (default: "Anton Antonov ")
-        height: Height in cm (default: 175.0)
-        weight: Weight in kg (default: 78.0)
-        hr_max: Maximum heart rate (default: 188)
-        hr_sit: Sitting heart rate (default: None)
-        vo2max: VO2max value (default: 58)
-        override_date_str: Optional date string in DD-MM-YYYY format to use instead of TCX date.
-                          Use this when the TCX contains UTC time but you want local time.
-        override_time_str: Optional time string in HH:MM:SS format to use instead of TCX time.
-                          Use this when the TCX contains UTC time but you want local time.
-    
-    Returns:
-        Path to the created CSV file
-    
-    Raises:
-        FileNotFoundError: If TCX file doesn't exist
-        ValueError: If TCX parsing fails
-    """
-    import xml.etree.ElementTree as ET
-    from datetime import datetime, timedelta
-    
-    if not tcx_path.exists():
-        raise FileNotFoundError(f"TCX file not found: {tcx_path}")
-    
-    # Parse TCX file
-    tree = ET.parse(tcx_path)
-    root = tree.getroot()
-    
-    # Define namespace
-    ns = {'tcx': 'http://www.garmin.com/xmlschemas/TrainingCenterDatabase/v2'}
-    
-    # Extract activity data
-    activity = root.find('.//tcx:Activity', ns)
-    if activity is None:
-        raise ValueError("No Activity found in TCX file")
-    
-    sport = activity.get('Sport', 'Other').upper()
-    
-    # Extract lap data
-    lap = activity.find('.//tcx:Lap', ns)
-    if lap is None:
-        raise ValueError("No Lap found in TCX file")
-    
-    # Extract start time and convert to DD-MM-YYYY format and HH:MM:SS
-    start_time_str = lap.get('StartTime')  # e.g., "2025-10-19T00:47:34.000Z"
-    start_dt = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
-    
-    # Use override date/time if provided (for using local time instead of TCX UTC time)
-    if override_date_str is not None:
-        date_str = override_date_str
-    else:
-        date_str = start_dt.strftime('%d-%m-%Y')  # DD-MM-YYYY
-    
-    if override_time_str is not None:
-        time_str = override_time_str
-    else:
-        time_str = start_dt.strftime('%H:%M:%S')  # HH:MM:SS
-    
-    # Extract metadata
-    total_time_seconds = float(lap.find('tcx:TotalTimeSeconds', ns).text)
-    duration = str(timedelta(seconds=int(total_time_seconds))).split('.')[0]  # HH:MM:SS format
-    
-    distance_elem = lap.find('tcx:DistanceMeters', ns)
-    distance_km = float(distance_elem.text) / 1000 if distance_elem is not None else 0.0
-    
-    calories_elem = lap.find('tcx:Calories', ns)
-    calories = int(calories_elem.text) if calories_elem is not None else None
-    
-    avg_hr_elem = lap.find('tcx:AverageHeartRateBpm/tcx:Value', ns)
-    avg_hr = int(avg_hr_elem.text) if avg_hr_elem is not None else None
-    
-    max_hr_elem = lap.find('tcx:MaximumHeartRateBpm/tcx:Value', ns)
-    max_hr_workout = int(max_hr_elem.text) if max_hr_elem is not None else None
-    
-    # Extract notes
-    notes_elem = activity.find('tcx:Notes', ns)
-    notes = notes_elem.text if notes_elem is not None else ""
-    
-    # Extract workout name from Training/Plan/Name if available
-    plan_name_elem = activity.find('.//tcx:Training/tcx:Plan/tcx:Name', ns)
-    if plan_name_elem is not None and plan_name_elem.text:
-        sport = plan_name_elem.text.upper()
-    
-    # Build metadata rows
-    metadata_row1_headers = [
-        'Name', 'Sport', 'Date', 'Start time', 'Duration', 'Total distance (km)',
-        'Average heart rate (bpm)', 'Average speed (km/h)', 'Max speed (km/h)',
-        'Average pace (min/km)', 'Max pace (min/km)', 'Calories',
-        'Fat percentage of calories(%)', 'Average cadence (rpm)', 'Average stride length (cm)',
-        'Running index', 'Training load', 'Ascent (m)', 'Descent (m)',
-        'Average power (W)', 'Max power (W)', 'Notes', 'Height (cm)', 'Weight (kg)',
-        'HR max', 'HR sit', 'VO2max', ''
-    ]
-    
-    metadata_row2_values = [
-        name, sport, date_str, time_str,
-        duration, f"{distance_km:.2f}",
-        str(avg_hr) if avg_hr else '', '', '', '', '',
-        str(calories) if calories else '',
-        '', '', '', '', '', '', '', '', '',
-        notes,  # CSV writer will properly escape newlines and commas
-        str(height), str(weight),
-        str(max_hr_workout) if max_hr_workout else str(hr_max), str(hr_sit) if hr_sit else '', str(vo2max) if vo2max else '', ''
-    ]
-    
-    # Extract trackpoints for time-series data
-    trackpoints = lap.findall('.//tcx:Trackpoint', ns)
-    
-    if not trackpoints:
-        raise ValueError("No trackpoints found in TCX file")
-    
-    # Get the first trackpoint timestamp as reference
-    first_trackpoint = trackpoints[0]
-    first_time_elem = first_trackpoint.find('tcx:Time', ns)
-    if first_time_elem is None:
-        raise ValueError("First trackpoint missing Time element")
-    
-    reference_time = datetime.fromisoformat(first_time_elem.text.replace('Z', '+00:00'))
-    
-    # Build time-series data
-    timeseries_headers = [
-        'Sample rate', 'Time', 'HR (bpm)', 'Speed (km/h)', 'Pace (min/km)',
-        'Cadence', 'Altitude (m)', 'Stride length (m)', 'Distances (m)',
-        'Temperatures (C)', 'Power (W)', ''
-    ]
-    
-    timeseries_rows = []
-    
-    # Process each trackpoint
-    for i, tp in enumerate(trackpoints):
-        time_elem = tp.find('tcx:Time', ns)
-        if time_elem is None:
-            continue
-        
-        tp_time = datetime.fromisoformat(time_elem.text.replace('Z', '+00:00'))
-        elapsed = int((tp_time - reference_time).total_seconds()) + 1  # +1 because first data row is at 00:00:01
-        
-        # Format as HH:MM:SS
-        hours = elapsed // 3600
-        minutes = (elapsed % 3600) // 60
-        seconds = elapsed % 60
-        time_formatted = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        
-        # Extract HR
-        hr_elem = tp.find('tcx:HeartRateBpm/tcx:Value', ns)
-        hr_value = hr_elem.text if hr_elem is not None else ''
-        
-        # Build row - first row gets sample rate of 1, rest get empty string
-        sample_rate = '1' if i == 0 else ''
-        row = [sample_rate, time_formatted, hr_value, '', '', '', '', '', '', '', '', '']
-        timeseries_rows.append(row)
-    
-    # Determine output path
-    if output_csv_path is None:
-        output_csv_path = tcx_path.with_suffix('.csv')
-    
-    # Write CSV using csv module for proper escaping
-    import csv
-    with open(output_csv_path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
-        
-        # Write metadata rows
-        writer.writerow(metadata_row1_headers)
-        writer.writerow(metadata_row2_values)
-        
-        # Write timeseries header
-        writer.writerow(timeseries_headers)
-        
-        # Write timeseries data
-        for row in timeseries_rows:
-            writer.writerow(row)
-    
-    print(f"✅ Converted TCX to CSV: {output_csv_path}")
-    print(f"  - Duration: {duration}")
-    print(f"  - Trackpoints: {len(trackpoints)}")
-    print(f"  - Average HR: {avg_hr if avg_hr else 'N/A'}")
-    
-    return output_csv_path
-
-
-# =============================================================================
-# Exercise Management Functions
-# =============================================================================
-
-def get_physical_info(
-    polar_user_id: int,
-    access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None
-) -> Dict[str, object]:
-    """Get user's physical information from Polar API.
-    
-    Returns physical parameters including weight, height, heart rate zones,
-    and VO2max. Fetches data from Polar API using transaction-based workflow.
-    Falls back to database values if API returns no data, then to hardcoded defaults.
-    Saves retrieved data to database for future use.
-    
-    Args:
-        polar_user_id: Polar user ID
-        access_token: OAuth access token
-        api_base: Polar API base URL
-        db_path: Optional path to DuckDB database for loading/saving physical info
-    
-    Returns:
-        Dictionary containing physical information with structure:
-        {
-            "weight": float (kg),
-            "height": float (cm),
-            "maximum-heart-rate": int (bpm),
-            "resting-heart-rate": int (bpm),
-            "aerobic-threshold": int (bpm) or None,
-            "anaerobic-threshold": int (bpm) or None,
-            "vo2-max": int or None,
-            ... (other fields from API if available)
-        }
-    """
-    # Try to get from database first as fallback
-    db_info = None
-    if db_path:
-        db_info = get_userinfo_from_db(db_path, polar_user_id)
-    
-    # Hardcoded default values (final fallback)
-    defaults = get_default_physical_info()
-    
-    # Build fallback info: prefer database values, then defaults
-    if db_info:
-        fallback_info = {
-            "weight": db_info.get('weight', defaults['weight']),
-            "height": db_info.get('height', defaults['height']),
-            "maximum-heart-rate": db_info.get('maximum_heart_rate', defaults['maximum_heart_rate']),
-            "resting-heart-rate": db_info.get('resting_heart_rate', defaults['resting_heart_rate']),
-            "aerobic-threshold": db_info.get('aerobic_threshold', defaults['aerobic_threshold']),
-            "anaerobic-threshold": db_info.get('anaerobic_threshold', defaults['anaerobic_threshold']),
-            "vo2-max": db_info.get('vo2_max', defaults['vo2_max'])
-        }
-        fallback_source = "database"
-    else:
-        fallback_info = {
-            "weight": defaults['weight'],
-            "height": defaults['height'],
-            "maximum-heart-rate": defaults['maximum_heart_rate'],
-            "resting-heart-rate": defaults['resting_heart_rate'],
-            "aerobic-threshold": defaults['aerobic_threshold'],
-            "anaerobic-threshold": defaults['anaerobic_threshold'],
-            "vo2-max": defaults['vo2_max']
-        }
-        fallback_source = "hardcoded defaults"
-    
-    def return_fallback(reason: str = "") -> Dict[str, object]:
-        """Return fallback info with appropriate message."""
-        if reason:
-            print(reason)
-        if fallback_source == "database":
-            print("✅ Using physical info from database")
-        else:
-            print("⚠️ Using hardcoded default values")
-        return fallback_info
-    
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json"
-    }
-    
-    try:
-        # Step 1: Create physical info transaction
-        print(f"Creating physical info transaction for user {polar_user_id}...")
-        transaction_url = f"{api_base}/users/{polar_user_id}/physical-information-transactions"
-        transaction_resp = requests.post(transaction_url, headers=headers)
-        
-        if transaction_resp.status_code == 204:
-            return return_fallback("⚠️ No new physical info data available from API")
-        
-        if transaction_resp.status_code != 201:
-            return return_fallback(f"⚠️  Transaction creation failed: {transaction_resp.status_code}")
-        
-        transaction_data = transaction_resp.json()
-        transaction_id = transaction_data.get('transaction-id')
-        
-        if not transaction_id:
-            return return_fallback("⚠️  No transaction ID received")
-        
-        # Step 2: List physical infos in transaction
-        print(f"Listing physical infos in transaction {transaction_id}...")
-        list_url = f"{api_base}/users/{polar_user_id}/physical-information-transactions/{transaction_id}"
-        list_resp = requests.get(list_url, headers=headers)
-        
-        if list_resp.status_code != 200:
-            # Try to commit transaction before returning
-            requests.put(list_url, headers=headers)
-            return return_fallback(f"⚠️  Could not list physical infos: {list_resp.status_code}")
-        
-        list_data = list_resp.json()
-        physical_info_urls = list_data.get('physical-informations', [])
-        print(f"✅ Found {len(physical_info_urls)} physical info record(s) in transaction")
-        
-        if not physical_info_urls:
-            # Commit transaction before returning
-            requests.put(list_url, headers=headers)
-            return return_fallback("⚠️ No physical infos found in transaction")
-        
-        # Step 3: Get the newest physical info (last in list)
-        # Physical infos are ordered by creation date, newest last
-        newest_info_url = physical_info_urls[-1]
-        print(f"Fetching newest physical info...")
-        
-        info_resp = requests.get(newest_info_url, headers=headers)
-        
-        if info_resp.status_code != 200:
-            # Commit transaction before returning
-            requests.put(list_url, headers=headers)
-            return return_fallback(f"⚠️  Could not fetch physical info: {info_resp.status_code}")
-        
-        physical_info = info_resp.json()
-        
-        # Step 4: Commit transaction
-        print("Committing physical info transaction...")
-        commit_resp = requests.put(list_url, headers=headers)
-        
-        if commit_resp.status_code != 200:
-            print(f"⚠️  Transaction commit failed: {commit_resp.status_code}")
-        else:
-            print("✅ Transaction committed successfully")
-        
-        # Extract values from API response, using defaults as fallback
-        result = {
-            "weight": physical_info.get('weight', defaults['weight']),
-            "height": physical_info.get('height', defaults['height']),
-            "maximum-heart-rate": physical_info.get('maximum-heart-rate', defaults['maximum_heart_rate']),
-            "resting-heart-rate": physical_info.get('resting-heart-rate', defaults['resting_heart_rate']),
-            "aerobic-threshold": physical_info.get('aerobic-threshold', defaults['aerobic_threshold']),
-            "anaerobic-threshold": physical_info.get('anaerobic-threshold', defaults['anaerobic_threshold']),
-            "vo2-max": physical_info.get('vo2-max', defaults['vo2_max'])
-        }
-        
-        print(f"✅ Physical info from API: {result['weight']}kg, {result['height']}cm, HR max: {result['maximum-heart-rate']}")
-        
-        # Save to database if db_path provided
-        if db_path:
-            user_data = {
-                'polar_user_id': polar_user_id,
-                'weight': result['weight'],
-                'height': result['height'],
-                'maximum_heart_rate': result['maximum-heart-rate'],
-                'resting_heart_rate': result['resting-heart-rate'],
-                'aerobic_threshold': result['aerobic-threshold'],
-                'anaerobic_threshold': result['anaerobic-threshold'],
-                'vo2_max': result['vo2-max']
-            }
-            # Remove None values
-            user_data = {k: v for k, v in user_data.items() if v is not None}
-            save_userinfo_to_db(db_path, user_data)
-        
-        return result
-        
-    except requests.exceptions.RequestException as e:
-        return return_fallback(f"⚠️  API request failed: {e}")
-    except Exception as e:
-        return return_fallback(f"⚠️  Unexpected error fetching physical info: {e}")
-
-
-def get_field(exercise: Dict[str, object], *keys: str) -> Optional[object]:
-    """Extract field from exercise dict trying multiple possible key names.
-    
-    Args:
-        exercise: Exercise dictionary
-        *keys: Key names to try in order
-    
-    Returns:
-        Value if found, None otherwise
-    """
-    for key in keys:
-        if key in exercise:
-            return exercise[key]
-    return None
-
-
-def normalize_start_time(exercise: Dict[str, object]) -> datetime:
-    """Normalize exercise start time to datetime object.
-    
-    Handles various timestamp formats and field names from Polar API.
-    
-    Args:
-        exercise: Exercise dictionary
-    
-    Returns:
-        datetime object, or empty string if parsing fails
-    """
-    raw = get_field(exercise, 'start_time', 'start-time', 'local_start_time', 'local-start-time')
-    if not raw:
-        return ''
-    # Handle potential trailing Z
-    raw_norm = raw.replace('Z', '+00:00') if raw.endswith('Z') else raw
-    try:
-        return datetime.fromisoformat(raw_norm)
-    except ValueError:
-        return raw
-
-
-def list_exercises(
-    access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3"
-) -> List[Dict[str, object]]:
-    """List user exercises using Polar AccessLink API.
-    
-    Args:
-        access_token: OAuth access token
-        api_base: Polar API base URL
-    
-    Returns:
-        List of exercise dictionaries
-    
-    Raises:
-        Exception: If exercise listing fails
-    """
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json"
-    }
-    
-    print("Listing exercises via /users/{user}/exercises API...\n")
-    exercises_url = f"{api_base}/exercises"
-    resp = requests.get(exercises_url, headers=headers)
-
-    exercises = []
-    if resp.status_code == 200:
-        body = resp.json()
-        if isinstance(body, list):
-            exercises = body
-        elif isinstance(body, dict):
-            exercises = body.get('exercises', [])
-        else:
-            print(f"⚠️  Unexpected exercises payload type: {type(body).__name__}")
-        print(f"✅ Retrieved {len(exercises)} exercise(s)")
-    elif resp.status_code == 204:
-        print("⚠️ No exercises available (204 No Content)")
-    else:
-        print(f"❌ Failed to list exercises: {resp.status_code}")
-        print(f"   Response: {resp.text}")
-        raise Exception("Exercise listing failed")
-    
-    return exercises
-
-
-def display_exercises(exercises: List[Dict[str, object]]) -> None:
-    """Display exercises in a formatted table.
-    
-    Args:
-        exercises: List of exercise dictionaries
-    """
-    if not exercises:
-        print("⚠️ No exercises to display.")
-        return
-    
-    print("\n" + "="*80)
-    print("AVAILABLE EXERCISES (new API)")
-    print("="*80)
-
-    for i, ex in enumerate(exercises):
-        print(f"\n{i+1}. Exercise ID: {get_field(ex, 'id', 'exercise_id')}")
-        print(f"   Start Time: {get_field(ex, 'start_time', 'start-time', 'local_start_time')}")
-        print(f"   Duration: {ex.get('duration', 'Unknown')}")
-        print(f"   Sport: {get_field(ex, 'sport', 'detailed_sport_info')}")
-    print("\n" + "="*80)
-
-
-def download_exercise_tcx(
-    exercise_id: str,
-    access_token: str,
-    output_dir: Path,
-    name: str,
-    height: float,
-    weight: float,
-    hr_max: int,
-    hr_sit: int,
-    vo2max: int,
-    api_base: str = "https://www.polaraccesslink.com/v3",
-    start_time: Optional[str] = None
-) -> Optional[pd.DataFrame]:
-    """Download and parse TCX data for an exercise.
-    
-    Uses convert_tcx_to_csv to convert TCX to Polar-compatible CSV format.
-    User info parameters must be provided (fetched once before calling this function).
-    
-    Args:
-        exercise_id: Exercise ID to download
-        access_token: OAuth access token
-        output_dir: Directory to save CSV output
-        name: User name for CSV metadata
-        height: User height in cm
-        weight: User weight in kg
-        hr_max: Maximum heart rate
-        hr_sit: Resting heart rate
-        vo2max: VO2max value
-        api_base: Polar API base URL
-        start_time: Start time from exercise listing API (local time).
-                   If provided, this is used for workoutId and CSV metadata
-                   instead of the UTC time in the TCX file.
-                   Format: "2025-05-11T10:59:46.000" (ISO format)
-    
-    Returns:
-        DataFrame with parsed CSV data, or None if download fails
-    """
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json"
-    }
-    
-    # Parse start_time to generate date/time strings for CSV metadata and filename
-    override_date_str = None
-    override_time_str = None
-    workout_id = None
-    csv_filename = f"polar_latest_exercise_{exercise_id}.csv"  # fallback name
-    
-    if start_time:
-        try:
-            from datetime import datetime as dt
-            # Parse the start time from exercise listing (local time)
-            # Format: "2025-05-11T10:59:46.000" or "2025-05-11T10:59:46"
-            start_time_clean = start_time.replace('Z', '') if start_time.endswith('Z') else start_time
-            if '.' in start_time_clean:
-                parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0])
-            else:
-                parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0])
-            
-            # Generate DD-MM-YYYY and HH:MM:SS for CSV metadata
-            override_date_str = parsed_dt.strftime('%d-%m-%Y')
-            override_time_str = parsed_dt.strftime('%H:%M:%S')
-            
-            # Generate workoutId: DD-MM-YYYY_HHMMSS
-            workout_id = f"{parsed_dt.strftime('%d-%m-%Y')}_{parsed_dt.strftime('%H%M%S')}"
-            
-            # Generate filename: Anton_Antonov_yyyy-mm-dd_HHMMSS_tcx_convert.CSV
-            csv_filename = f"Anton_Antonov_{parsed_dt.strftime('%Y-%m-%d')}_{parsed_dt.strftime('%H%M%S')}_tcx_convert.CSV"
-            print(f"✅ Using start time from exercise listing: {start_time}")
-        except Exception as e:
-            print(f"⚠️  Could not parse start_time '{start_time}': {e}")
-            print("  Falling back to TCX file timestamps")
-    
-    # Fetch TCX for exercise
-    print("\nDownloading TCX for exercise...")
-    tcx_url = f"{api_base}/exercises/{exercise_id}/tcx"
-    tcx_headers = {**headers, "Accept": "application/vnd.garmin.tcx+xml"}
-    tcx_resp = requests.get(tcx_url, headers=tcx_headers)
-
-    if tcx_resp.status_code != 200:
-        print(f"❌ Failed to fetch TCX for exercise {exercise_id}: {tcx_resp.status_code}")
-        snippet = tcx_resp.text[:500] if hasattr(tcx_resp, 'text') else b""
-        print(f"   Response: {snippet}...")
-        return None
-    
-    print("✅ TCX downloaded")
-    
-    # Save TCX file (kept for reference, not deleted)
-    output_dir.mkdir(exist_ok=True)
-    tcx_path = output_dir / f"exercise_{exercise_id}.tcx"
-    
-    with open(tcx_path, 'wb') as f:
-        f.write(tcx_resp.content)
-    print(f"✅ TCX saved: {tcx_path}")
-    
-    # Convert TCX to CSV using convert_tcx_to_csv
-    csv_path = output_dir / csv_filename
-    
-    convert_tcx_to_csv(
-        tcx_path=tcx_path,
-        output_csv_path=csv_path,
-        name=name,
-        height=height,
-        weight=weight,
-        hr_max=hr_max,
-        hr_sit=hr_sit,
-        vo2max=vo2max,
-        override_date_str=override_date_str,
-        override_time_str=override_time_str
-    )
-    
-    # Read the CSV and return as DataFrame
-    df_csv = pd.read_csv(csv_path, skiprows=2)  # Skip metadata rows
-    print(f"✅ CSV saved: {csv_path}")
-    if workout_id:
-        print(f"✅ WorkoutId: {workout_id}")
-    
-    return df_csv
-
-
-# =============================================================================
-# Validation Functions
-# =============================================================================
-
-def is_token_valid(tokens_file: Path = Path("tokens_polar.json")) -> bool:
-    """Check if a valid token exists in the token file.
-    
-    Args:
-        tokens_file: Path to token storage file
-    
-    Returns:
-        True if token file exists and contains valid access_token, False otherwise
-    """
-    if not tokens_file.exists():
-        return False
-    
-    try:
-        tokens = load_tokens(tokens_file)
-        if not tokens:
-            return False
-        
-        # Check if access_token exists and has reasonable length
-        access_token = tokens.get('access_token')
-        if not access_token or len(access_token) < 10:
-            return False
-        
-        # Token exists and looks valid
-        return True
-    except (json.JSONDecodeError, Exception):
-        return False
-
-
-def run_validation_checks(
-    tokens_file: Path = Path("tokens_polar.json"),
-    required_env_vars: List[str] = None
-) -> bool:
-    """Run validation checks on tokens file and environment variables.
-    
-    Args:
-        tokens_file: Path to token storage file
-        required_env_vars: List of required environment variable names
-    
-    Returns:
-        True if all checks pass, False otherwise
-    """
-    if required_env_vars is None:
-        required_env_vars = ['POLAR_CLIENT_ID', 'POLAR_CLIENT_SECRET']
-    
-    print("Running validation checks...\n")
-
-    validation_passed = True
-
-    # Check 1: Tokens file exists
-    if tokens_file.exists():
-        print("✅ Tokens file exists")
-        
-        # Check 2: Tokens file is valid JSON
-        try:
-            tokens = load_tokens(tokens_file)
-            print("✅ Tokens file is valid JSON")
-            
-            # Check 3: Required fields present
-            required_fields = ['access_token', 'token_type']
-            for field in required_fields:
-                if field in tokens and tokens[field]:
-                    print(f"✅ Field '{field}' present")
-                else:
-                    print(f"❌ Field '{field}' missing or empty")
-                    validation_passed = False
-            
-            # Check 4: Optional refresh_token
-            if 'refresh_token' in tokens and tokens['refresh_token']:
-                print(f"✅ Refresh token available")
-            else:
-                print(f"⚠️ Refresh token not available (optional)")
-            
-            # Check 5: Token format (basic validation)
-            if len(tokens['access_token']) > 10:
-                print(f"✅ Access token format looks valid")
-            else:
-                print(f"⚠️  Access token seems too short")
-                validation_passed = False
-                
-        except json.JSONDecodeError:
-            print("❌ Tokens file is not valid JSON")
-            validation_passed = False
-    else:
-        print("❌ Tokens file does not exist")
-        print("   Run authorization flow to obtain tokens")
-        validation_passed = False
-
-    # Check 6: Environment variables
-    for var in required_env_vars:
-        if os.getenv(var):
-            print(f"✅ Environment variable {var} is set")
-        else:
-            print(f"❌ Environment variable {var} is not set")
-            validation_passed = False
-
-    # Summary
-    print("\n" + "="*80)
-    if validation_passed:
-        print("✅ ALL VALIDATION CHECKS PASSED")
-    else:
-        print("⚠️  SOME VALIDATION CHECKS FAILED")
-    print("="*80)
-    
-    return validation_passed
-
-
-# =============================================================================
-# Complete Workflow Orchestration
-# =============================================================================
 
 def run_polar_workflow(
     tokens_file: Path = Path("tokens_polar.json"),
@@ -1521,6 +94,7 @@ def run_polar_workflow(
     2. Check token validity and run authorization if needed
     3. Register user (idempotent)
     4. List and download all new exercises (not already in database)
+    5. Upload CSV files to Azure Storage (if enabled)
     
     Args:
         tokens_file: Path to token storage file (default: tokens_polar.json)
@@ -1534,6 +108,7 @@ def run_polar_workflow(
             - exercises: List of all exercises
             - new_exercises: List of newly downloaded exercises
             - tcx_dataframes: List of DataFrames with trackpoint data
+            - azure_uploads: List of Azure blob URLs (if enabled)
     
     Raises:
         ValueError: If configuration is invalid
@@ -1547,6 +122,17 @@ def run_polar_workflow(
     print("Step 1: Loading configuration...")
     config = load_configuration()
     output_dir = config['OUTPUT_DIR']
+    print()
+    
+    # Check Azure Storage status
+    azure_enabled = is_azure_storage_enabled()
+    if azure_enabled:
+        print("☁️ Azure Storage upload is ENABLED")
+        azure_config = get_azure_storage_config()
+        print(f"  - Storage Account: {azure_config['account_name']}")
+        print(f"  - Container: {azure_config['container_name']}")
+    else:
+        print("ℹ️ Azure Storage upload is disabled")
     print()
     
     # Step 2: Check token validity and authorize if needed
@@ -1615,6 +201,7 @@ def run_polar_workflow(
     
     tcx_dataframes = []
     new_exercises = []
+    azure_uploads = []
     
     if exercises:
         # Display all exercises
@@ -1674,6 +261,26 @@ def run_polar_workflow(
                 
                 if tcx_dataframe is not None:
                     tcx_dataframes.append(tcx_dataframe)
+                    
+                    # Upload to Azure Storage if enabled
+                    if azure_enabled and start_time:
+                        try:
+                            # Generate workout ID for Azure blob name
+                            workout_id = generate_workout_id_from_start_time(start_time)
+                            
+                            # Find the CSV file that was just created
+                            from datetime import datetime as dt
+                            start_time_clean = start_time.replace('Z', '') if start_time.endswith('Z') else start_time
+                            parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0].split('.')[0])
+                            csv_filename = f"Anton_Antonov_{parsed_dt.strftime('%Y-%m-%d')}_{parsed_dt.strftime('%H%M%S')}_tcx_convert.CSV"
+                            csv_path = output_dir / csv_filename
+                            
+                            if csv_path.exists():
+                                blob_url = upload_workout_csv(csv_path, workout_id=workout_id)
+                                if blob_url:
+                                    azure_uploads.append(blob_url)
+                        except Exception as e:
+                            print(f"⚠️ Azure upload failed for workout {workout_id}: {e}")
         else:
             print("\n⚠️ All exercises are already in the database. Nothing new to download.")
     else:
@@ -1684,6 +291,8 @@ def run_polar_workflow(
     print("✅ WORKFLOW COMPLETE")
     if tcx_dataframes:
         print(f"  Downloaded {len(tcx_dataframes)} new exercise(s)")
+    if azure_uploads:
+        print(f"  Uploaded {len(azure_uploads)} file(s) to Azure Storage")
     print("="*80)
     
     return {
@@ -1692,7 +301,8 @@ def run_polar_workflow(
         'access_token': access_token,
         'exercises': exercises,
         'new_exercises': new_exercises,
-        'tcx_dataframes': tcx_dataframes
+        'tcx_dataframes': tcx_dataframes,
+        'azure_uploads': azure_uploads,
     }
 
 
@@ -1706,14 +316,21 @@ __all__ = [
     'encode_credentials',
     'exchange_code_for_token',
     'refresh_access_token',
+    'is_token_valid',
 
     # User management
-    'get_user_info',
-    'register_user',
+    'ensure_userinfo_table',
+    'get_userinfo_from_db',
+    'save_userinfo_to_db',
     'get_default_physical_info',
     'generate_workout_id_from_start_time',
     'get_existing_workout_ids',
-    'filter_new_exercises',
+    'get_user_info',
+    'register_user',
+    'get_physical_info',
+
+    # Common tools
+    'get_field',
 
     # OAuth flow
     'create_callback_handler',
@@ -1725,16 +342,22 @@ __all__ = [
     'convert_tcx_to_csv',
 
     # Exercise management
-    'get_physical_info',
-    'get_field',
     'normalize_start_time',
     'list_exercises',
     'display_exercises',
     'download_exercise_tcx',
+    'filter_new_exercises',
 
     # Validation
-    'is_token_valid',
     'run_validation_checks',
+
+    # Azure Storage
+    'is_azure_storage_enabled',
+    'get_azure_storage_config',
+    'upload_csv_to_azure',
+    'upload_workout_csv',
+    'list_workout_blobs',
+    'AZURE_SDK_AVAILABLE',
 
     # Complete workflow
     'run_polar_workflow',

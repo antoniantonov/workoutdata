@@ -139,75 +139,6 @@ def get_default_physical_info() -> Dict[str, object]:
 
 
 # =============================================================================
-# Workout ID and Exercise Filtering
-# =============================================================================
-
-def generate_workout_id_from_start_time(start_time_str: str) -> str:
-    """Generate workoutId from exercise start time string.
-    
-    Converts start time from Polar API format to workoutId format.
-    
-    Args:
-        start_time_str: Start time string from Polar API (e.g., "2025-05-11T10:59:46.000")
-    
-    Returns:
-        WorkoutId in format "DD-MM-YYYY_HHMMSS" (e.g., "11-05-2025_105946")
-    """
-    # Handle various formats from Polar API
-    # Remove timezone info if present
-    clean_time = start_time_str.replace('Z', '').replace('+00:00', '')
-    
-    # Try parsing with milliseconds first, then without
-    for fmt in ['%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S']:
-        try:
-            dt = datetime.fromisoformat(clean_time)
-            break
-        except ValueError:
-            continue
-    else:
-        # Fallback: try direct parsing
-        dt = datetime.fromisoformat(clean_time)
-    
-    # Format: DD-MM-YYYY_HHMMSS
-    return dt.strftime('%d-%m-%Y_%H%M%S')
-
-
-def get_existing_workout_ids(db_path: Path) -> set:
-    """Get set of existing workout IDs from the database.
-    
-    Args:
-        db_path: Path to DuckDB database file
-    
-    Returns:
-        Set of workout IDs that already exist in workout_metadata table
-    """
-    existing_ids = set()
-    
-    try:
-        con = duckdb.connect(str(db_path))
-        try:
-            # Check if table exists
-            result = con.execute("""
-                SELECT table_name FROM information_schema.tables 
-                WHERE table_name = 'workout_metadata'
-            """).fetchone()
-            
-            if result:
-                # Get all existing workout IDs
-                rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
-                existing_ids = {row[0] for row in rows}
-                print(f"✅ Found {len(existing_ids)} existing workouts in database")
-            else:
-                print("⚠️ workout_metadata table does not exist yet")
-        finally:
-            con.close()
-    except Exception as e:
-        print(f"⚠️  Error checking existing workouts: {e}")
-    
-    return existing_ids
-
-
-# =============================================================================
 # User Management Functions
 # =============================================================================
 
@@ -513,10 +444,6 @@ __all__ = [
     'get_userinfo_from_db',
     'save_userinfo_to_db',
     'get_default_physical_info',
-    
-    # Workout ID helpers
-    'generate_workout_id_from_start_time',
-    'get_existing_workout_ids',
     
     # User management
     'get_user_info',

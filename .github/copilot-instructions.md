@@ -67,9 +67,9 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
   - `tokens.py` – Token management (save, load, exchange, refresh OAuth tokens, token validation).
   - `users.py` – User management (registration, physical info, database caching).
   - `oauth.py` – OAuth callback server and authorization flow.
-  - `tcx_converter.py` – TCX to Polar-compatible CSV conversion.
-  - `exercises.py` – Exercise listing, TCX download, filtering new exercises.
-  - `validation.py` – Environment and configuration validation.
+  - `converters.py` – TCX to Polar-compatible CSV conversion.
+  - `exercises.py` – Exercise listing, TCX download, filtering new exercises, workout ID helpers.
+  - `validations.py` – Environment and configuration validation.
   - `azure_storage.py` – Azure Blob Storage upload (optional).
   - `common_tools.py` – Shared utility functions (get_field).
   - `config.py` – Configuration loading from environment variables.

@@ -32,8 +32,6 @@ from users import (
     get_userinfo_from_db,
     save_userinfo_to_db,
     get_default_physical_info,
-    generate_workout_id_from_start_time,
-    get_existing_workout_ids,
     get_user_info,
     register_user,
     get_physical_info,
@@ -48,10 +46,12 @@ from oauth import (
 )
 
 # Re-export TCX conversion
-from tcx_converter import convert_tcx_to_csv
+from converters import convert_tcx_to_csv
 
 # Re-export exercise management
 from exercises import (
+    generate_workout_id_from_start_time,
+    get_existing_workout_ids,
     normalize_start_time,
     list_exercises,
     display_exercises,
@@ -63,7 +63,7 @@ from exercises import (
 from common_tools import get_field
 
 # Re-export validation
-from validation import run_validation_checks
+from validations import run_validation_checks
 
 # Re-export token validation (now in tokens module)
 from tokens import is_token_valid
@@ -323,8 +323,6 @@ __all__ = [
     'get_userinfo_from_db',
     'save_userinfo_to_db',
     'get_default_physical_info',
-    'generate_workout_id_from_start_time',
-    'get_existing_workout_ids',
     'get_user_info',
     'register_user',
     'get_physical_info',
@@ -342,6 +340,8 @@ __all__ = [
     'convert_tcx_to_csv',
 
     # Exercise management
+    'generate_workout_id_from_start_time',
+    'get_existing_workout_ids',
     'normalize_start_time',
     'list_exercises',
     'display_exercises',

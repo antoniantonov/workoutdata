@@ -12,13 +12,86 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 import requests  # type: ignore
 
 from common_tools import get_field
-from tcx_converter import convert_tcx_to_csv
-from users import generate_workout_id_from_start_time, get_existing_workout_ids
+from converters import convert_tcx_to_csv
 
+
+# =============================================================================
+# Workout ID Helpers
+# =============================================================================
+
+def generate_workout_id_from_start_time(start_time_str: str) -> str:
+    """Generate workoutId from exercise start time string.
+    
+    Converts start time from Polar API format to workoutId format.
+    
+    Args:
+        start_time_str: Start time string from Polar API (e.g., "2025-05-11T10:59:46.000")
+    
+    Returns:
+        WorkoutId in format "DD-MM-YYYY_HHMMSS" (e.g., "11-05-2025_105946")
+    """
+    # Handle various formats from Polar API
+    # Remove timezone info if present
+    clean_time = start_time_str.replace('Z', '').replace('+00:00', '')
+    
+    # Try parsing with milliseconds first, then without
+    for fmt in ['%Y-%m-%dT%H:%M:%S.%f', '%Y-%m-%dT%H:%M:%S']:
+        try:
+            dt = datetime.fromisoformat(clean_time)
+            break
+        except ValueError:
+            continue
+    else:
+        # Fallback: try direct parsing
+        dt = datetime.fromisoformat(clean_time)
+    
+    # Format: DD-MM-YYYY_HHMMSS
+    return dt.strftime('%d-%m-%Y_%H%M%S')
+
+
+def get_existing_workout_ids(db_path: Path) -> set:
+    """Get set of existing workout IDs from the database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+    
+    Returns:
+        Set of workout IDs that already exist in workout_metadata table
+    """
+    existing_ids = set()
+    
+    try:
+        con = duckdb.connect(str(db_path))
+        try:
+            # Check if table exists
+            result = con.execute("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_name = 'workout_metadata'
+            """).fetchone()
+            
+            if result:
+                # Get all existing workout IDs
+                rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
+                existing_ids = {row[0] for row in rows}
+                print(f"✅ Found {len(existing_ids)} existing workouts in database")
+            else:
+                print("⚠️ workout_metadata table does not exist yet")
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"⚠️  Error checking existing workouts: {e}")
+    
+    return existing_ids
+
+
+# =============================================================================
+# Exercise Management Functions
+# =============================================================================
 
 def normalize_start_time(exercise: Dict[str, object]) -> datetime:
     """Normalize exercise start time to datetime object.
@@ -257,6 +330,11 @@ def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Path) -> L
 
 
 __all__ = [
+    # Workout ID helpers
+    'generate_workout_id_from_start_time',
+    'get_existing_workout_ids',
+    
+    # Exercise management
     'normalize_start_time',
     'list_exercises',
     'display_exercises',

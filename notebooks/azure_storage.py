@@ -134,7 +134,7 @@ def upload_csv_to_azure(
     """
     # Check if Azure Storage is enabled
     if not is_azure_storage_enabled():
-        print("ℹ️ Azure Storage upload is disabled. Set AZURE_STORAGE_ENABLED=true to enable.")
+        print("⚠️ Azure Storage upload is disabled. Set AZURE_STORAGE_ENABLED=true to enable.")
         return None
     
     if not csv_path.exists():

@@ -15,6 +15,7 @@ from typing import Iterable, Optional
 
 import duckdb  # type: ignore
 import pandas as pd  # type: ignore
+from IPython.display import display
 
 from config import load_configuration
 
@@ -413,3 +414,185 @@ def import_workout_from_directory(
         "skipped": skipped_files,
         "errors": error_files,
     }
+
+def expand_table_with_missing_bpm(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Expands the DataFrame to include rows for missing heart rate (HR) values by interpolating
+    between existing data points. It also calculates calories per second.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Input DataFrame containing 'HR' and 'Calories' columns.
+
+    Returns
+    -------
+    pd.DataFrame
+        Expanded DataFrame with interpolated rows and a 'Calories_Second' column.
+    """
+    # Skip the first two rows (header and units)
+    # Assuming the input df includes the units row as the first row of data
+    data = df.iloc[1:].copy()
+    
+    # Convert columns to numeric where applicable
+    data['HR'] = pd.to_numeric(data['HR'], errors='coerce')
+    data['Calories'] = pd.to_numeric(data['Calories'], errors='coerce')
+    
+    # Create a list to store expanded rows
+    expanded_rows = []
+    
+    # Iterate through rows to interpolate missing BPM values
+    for i in range(len(data) - 1):
+        current_row = data.iloc[i]
+        next_row = data.iloc[i + 1]
+        
+        current_bpm = current_row['HR']
+        next_bpm = next_row['HR']
+        
+        # Add the current row to the expanded rows
+        expanded_rows.append(current_row)
+        
+        # Check if there are missing BPM values
+        if next_bpm - current_bpm > 1:
+            missing_bpm_count = int(next_bpm - current_bpm - 1)
+            calorie_diff = (next_row['Calories'] - current_row['Calories']) / (missing_bpm_count + 1)
+            
+            # Generate missing rows
+            for j in range(1, missing_bpm_count + 1):
+                interpolated_bpm = current_bpm + j
+                interpolated_calories = current_row['Calories'] + calorie_diff * j
+                
+                # Create a new row with interpolated values
+                interpolated_row = current_row.copy()
+                interpolated_row['HR'] = interpolated_bpm
+                # Calculate calories per second based on the interpolated value
+                interpolated_row['Calories'] = interpolated_calories
+                
+                # Add the interpolated row to the expanded rows
+                expanded_rows.append(interpolated_row)
+    
+    # Add the last row to the expanded rows
+    last_row = data.iloc[-1].copy()
+    expanded_rows.append(last_row)
+    
+    # Convert the list of rows back to a DataFrame
+    expanded_data = pd.DataFrame(expanded_rows)
+
+    # Add a new column for calories per minute (Wait, code says / 60, so it is per second)
+    expanded_data['Calories_Second'] = expanded_data['Calories'] / 60
+    
+    return expanded_data
+
+
+def import_to_duckdb(df: pd.DataFrame, table_name: str, db_file: str | Path = 'workout_data.db', replace: bool = False) -> Optional[duckdb.DuckDBPyConnection]:
+    """
+    Import a pandas DataFrame into a DuckDB table.
+    
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        The DataFrame to import into DuckDB
+    table_name : str
+        Name for the DuckDB table
+    db_file : str or Path, optional
+        Path to DuckDB database file (default: 'workout_data.db')
+    replace : bool, optional
+        Whether to replace an existing table (default: False)
+    
+    Returns
+    -------
+    duckdb.DuckDBPyConnection or None
+        The active DuckDB connection (if not closed) or None.
+    """
+    db_path_str = str(db_file)
+    con = duckdb.connect(db_path_str)
+    
+    try:
+        # Check if table exists
+        table_exists = con.execute(f"SELECT count(*) FROM information_schema.tables WHERE table_name='{table_name}'").fetchone()[0] > 0
+        
+        if table_exists:
+            if replace:
+                con.execute(f"DROP TABLE IF EXISTS {table_name}")
+            else:
+                print(f"Table '{table_name}' already exists. Set replace=True to overwrite.")
+                return None
+        
+        # Import the DataFrame into a DuckDB table
+        con.register('df_view', df)
+        con.execute(f"CREATE TABLE {table_name} AS SELECT * FROM df_view")
+        
+        # Verify the import
+        count = con.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        print(f"Data imported to DuckDB table '{table_name}' with {count} rows")
+        
+    finally:
+        con.close()
+    return None
+
+
+def calculate_and_import_calories(duckdb_path: str | Path, v02max_data_path: str | Path):
+    """
+    Process VO2max data to calculate calorie burn per HR and import to DuckDB.
+    
+    Parameters
+    ----------
+    duckdb_path : str or Path
+        Path to the DuckDB database.
+    v02max_data_path : str or Path
+        Path to the CSV file containing VO2max/Calorie data.
+    """
+    print(f"Reading VO2max data from {v02max_data_path}...")
+    df = pd.read_csv(v02max_data_path)
+    
+    # Keep only HR and Calories columns
+    df = df[['HR', 'Calories']]
+    print(f"Total rows in original DataFrame: {len(df)}")
+
+    # Expand the table
+    expanded_df = expand_table_with_missing_bpm(df)
+    print(f"Total rows in expanded DataFrame: {len(expanded_df)}")
+
+    # Set display options to show all rows and columns without truncation
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.float_format', '{:.6f}'.format)
+
+    # Find the index of the maximum HR value in expanded_df
+    max_hr_value = expanded_df['HR'].max()
+    max_hr_index = expanded_df[expanded_df['HR'] == max_hr_value].index[0]
+
+    print(f"Maximum HR value in expanded_df: {max_hr_value} at index {max_hr_index}")
+
+    # Create a subset of the expanded DataFrame from index 0 to the index of maximum HR
+    hr_rise_expanded_df = expanded_df.loc[:max_hr_index].copy()
+    print(f"Total rows in expanded sliced (0:{max_hr_index}) DataFrame : {len(hr_rise_expanded_df)}")
+
+    # Sorting it because we can have the following sequence of HR
+    # e.g., 150, 151, 152, 151, 150.
+    # Sorting it will put all the same HR values next to each other, so the collapsing algo
+    # below will be able to collapse them properly.
+    hr_rise_expanded_df = hr_rise_expanded_df.sort_values(by='HR').reset_index(drop=True)
+
+    # Display the subset of expanded DataFrame (data up to max HR)
+    print("\nExpanded data from HR rise (index 0 to max HR):")
+    display(hr_rise_expanded_df)
+
+    # Create a group identifier for consecutive identical HR values
+    hr_rise_expanded_df['group'] = (hr_rise_expanded_df['HR'] != hr_rise_expanded_df['HR'].shift()).cumsum()
+
+    # Group by both group and HR to collapse only consecutive duplicates
+    collapsed_df = hr_rise_expanded_df.groupby(['group', 'HR']).agg({
+        'Calories': 'mean',
+        'Calories_Second': 'mean'
+    }).reset_index().drop('group', axis=1)
+    
+    print(f"Total rows in collapsed DataFrame: {len(collapsed_df)}")
+
+    # Display the collapsed DataFrame
+    print("\nFull collapsed DataFrame:")
+    display(collapsed_df)
+
+    # Write the collapsed DataFrame to DuckDB
+    import_to_duckdb(collapsed_df, 'calories_per_hr', duckdb_path, replace=True)

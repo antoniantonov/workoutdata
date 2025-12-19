@@ -133,11 +133,22 @@ def plot_hr_with_zones(
     zone_colors = {i + 1: color for i, color in enumerate(colors)}
     
     for zone, color in zone_colors.items():
+        # Get the max HR for this zone from zones_df
+        if zone <= len(zones_df):
+            max_hr_for_zone = int(zones_df.iloc[zone - 1]['HR'])
+            # Special case for the last zone
+            if zone == len(zones_df):
+                zone_label = f'Zone {zone} (Max HR: {max_hr_for_zone}+)'
+            else:
+                zone_label = f'Zone {zone} (Max HR: {max_hr_for_zone})'
+        else:
+            zone_label = f'Zone {zone}'
+        
         fig.add_trace(go.Scatter(
             x=[None], y=[None],
             mode='markers',
             marker=dict(size=10),
-            name=f'Zone {zone}',
+            name=zone_label,
             legendgroup=f'Zone {zone}',
             showlegend=True,
             marker_color=color
@@ -249,12 +260,23 @@ def piechart_hr_with_zones(
         lambda seconds: f"{seconds // 3600:02}:{(seconds % 3600) // 60:02}:{seconds % 60:02}"
     )
 
-    # Create a subplot with two columns: one for the pie chart and one for the table
+    # Extract notes from metadata
+    notes = meta_df['Notes'].iloc[0] if 'Notes' in meta_df.columns and not meta_df.empty else ""
+    notes_text = notes if notes and pd.notna(notes) else "No notes available"
+    
+    # Replace newline characters with HTML line breaks for proper rendering
+    notes_html = notes_text.replace('\n', '<br>').replace('\r\n', '<br>').replace('\r', '<br>')
+
+    # Create a subplot with two columns and two rows: pie chart, zone table, and notes
     fig = make_subplots(
-        rows=1, cols=2, 
-        column_widths=[0.6, 0.4],  # Adjust column widths
-        specs=[[{"type": "domain"}, {"type": "table"}]],  # Specify chart types
-        subplot_titles=["Time Spent in Each HR Zone", "Zone Details"]
+        rows=2, cols=2, 
+        column_widths=[0.6, 0.4],
+        row_heights=[0.7, 0.3],
+        specs=[
+            [{"type": "domain"}, {"type": "table"}],
+            [{"type": "table", "colspan": 2}, None]
+        ],
+        subplot_titles=["Time Spent in Each HR Zone", "Zone Details", "Workout Notes"]
     )
 
     fig.add_trace(
@@ -276,11 +298,27 @@ def piechart_hr_with_zones(
         row=1, col=2
     )
 
+    # Add notes table below
+    fig.add_trace(
+        go.Table(
+            header=dict(values=["Notes"], align='left', font=dict(size=12, color='white'), fill_color='darkblue'),
+            cells=dict(
+                values=[[notes_html]], 
+                align='left', 
+                font=dict(size=10), 
+                fill_color='lightyellow',
+                height=30  # Increase cell height to accommodate multiple lines
+            )
+        ),
+        row=2, col=1
+    )
+
     # Adjust layout to fit both the pie chart and table
     fig.update_layout(
         title_text="Time Spent in Each HR Zone",
         title_x=0.5,  # Center the title
-        margin=dict(l=50, r=50, t=50, b=50)  # Adjust margins for better fit
+        margin=dict(l=50, r=50, t=80, b=50),  # Adjust margins for better fit
+        height=700  # Increase height to accommodate notes
     )
 
     fig.show()

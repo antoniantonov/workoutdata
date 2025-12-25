@@ -80,7 +80,7 @@ def load_configuration() -> Dict[str, object]:
     # File Paths Configuration
     # =============================================================================
     
-    # Get base directory (parent of notebooks directory)
+    # Get base directory (parent of src directory)
     base_dir = Path(__file__).parent.parent
     
     # Token storage file

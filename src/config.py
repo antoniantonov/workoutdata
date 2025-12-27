@@ -80,7 +80,7 @@ def load_configuration() -> Dict[str, object]:
     # File Paths Configuration
     # =============================================================================
     
-    # Get base directory (parent of notebooks directory)
+    # Get base directory (parent of src directory)
     base_dir = Path(__file__).parent.parent
     
     # Token storage file
@@ -129,7 +129,7 @@ def load_configuration() -> Dict[str, object]:
     AZURE_STORAGE_ACCOUNT_NAME = os.getenv('AZURE_STORAGE_ACCOUNT_NAME')
     AZURE_STORAGE_CONTAINER_NAME = os.getenv('AZURE_STORAGE_CONTAINER_NAME', 'workout-data')
 
-    print(f"✓ Configuration loaded")
+    print(f"✅ Configuration loaded")
     print(f"  - Client ID: {CLIENT_ID[:8]}...")
     print(f"  - Redirect Port: {REDIRECT_PORT}")
     print(f"  - Member ID: {MEMBER_ID if MEMBER_ID else 'Not set (will be obtained)'}")

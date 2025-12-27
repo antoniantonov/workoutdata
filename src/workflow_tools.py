@@ -55,7 +55,7 @@ from exercises import (
     normalize_start_time,
     list_exercises,
     display_exercises,
-    download_exercise_tcx,
+    download_tcx_and_convert_to_csv,
     filter_new_exercises,
 )
 
@@ -72,10 +72,8 @@ from tokens import is_token_valid
 from azure_storage import (
     is_azure_storage_enabled,
     get_azure_storage_config,
-    upload_csv_to_azure,
-    upload_workout_csv,
-    list_workout_blobs,
-    AZURE_SDK_AVAILABLE,
+    upload_file_to_azure_storage,
+    list_azure_storage_blobs,
 )
 
 # Standard library imports needed for run_polar_workflow
@@ -199,7 +197,8 @@ def run_polar_workflow(
         api_base=config['API_BASE']
     )
     
-    tcx_dataframes = []
+    downloaded_tcx_files = []
+    processed_csv_files = []
     new_exercises = []
     azure_uploads = []
     
@@ -245,7 +244,7 @@ def run_polar_workflow(
                 print(f"Start Time: {start_time}")
                 
                 # Download TCX and convert to CSV
-                tcx_dataframe = download_exercise_tcx(
+                result = download_tcx_and_convert_to_csv(
                     exercise_id=exercise_id,
                     access_token=access_token,
                     output_dir=output_dir,
@@ -259,8 +258,10 @@ def run_polar_workflow(
                     start_time=start_time
                 )
                 
-                if tcx_dataframe is not None:
-                    tcx_dataframes.append(tcx_dataframe)
+                if result is not None:
+                    csv_path, tcx_path = result
+                    downloaded_tcx_files.append(tcx_path)
+                    processed_csv_files.append(csv_path)
                     
                     # Upload to Azure Storage if enabled
                     if azure_enabled and start_time:
@@ -268,17 +269,17 @@ def run_polar_workflow(
                             # Generate workout ID for Azure blob name
                             workout_id = generate_workout_id_from_start_time(start_time)
                             
-                            # Find the CSV file that was just created
-                            from datetime import datetime as dt
-                            start_time_clean = start_time.replace('Z', '') if start_time.endswith('Z') else start_time
-                            parsed_dt = dt.fromisoformat(start_time_clean.split('+')[0].split('.')[0])
-                            csv_filename = f"Anton_Antonov_{parsed_dt.strftime('%Y-%m-%d')}_{parsed_dt.strftime('%H%M%S')}_tcx_convert.CSV"
-                            csv_path = output_dir / csv_filename
+                            # Upload CSV to polar_csv folder
+                            csv_blob_name = f"polar_csv/{workout_id}.csv"
+                            csv_blob_url = upload_file_to_azure_storage(csv_path, blob_name=csv_blob_name)
+                            if csv_blob_url:
+                                azure_uploads.append(csv_blob_url)
                             
-                            if csv_path.exists():
-                                blob_url = upload_workout_csv(csv_path, workout_id=workout_id)
-                                if blob_url:
-                                    azure_uploads.append(blob_url)
+                            # Upload TCX to polar_tcx folder
+                            tcx_blob_name = f"polar_tcx/{workout_id}.tcx"
+                            tcx_blob_url = upload_file_to_azure_storage(tcx_path, blob_name=tcx_blob_name)
+                            if tcx_blob_url:
+                                azure_uploads.append(tcx_blob_url)
                         except Exception as e:
                             print(f"⚠️ Azure upload failed for workout {workout_id}: {e}")
         else:
@@ -289,10 +290,10 @@ def run_polar_workflow(
     print()
     print("="*80)
     print("✅ WORKFLOW COMPLETE")
-    if tcx_dataframes:
-        print(f"  Downloaded {len(tcx_dataframes)} new exercise(s)")
+    if downloaded_tcx_files:
+        print(f"  Downloaded and processed {len(downloaded_tcx_files)} new exercise(s)")
     if azure_uploads:
-        print(f"  Uploaded {len(azure_uploads)} file(s) to Azure Storage")
+        print(f"  Uploaded {len(azure_uploads)} file(s) (tcx and csv) to Azure Storage")
     print("="*80)
     
     return {
@@ -301,7 +302,8 @@ def run_polar_workflow(
         'access_token': access_token,
         'exercises': exercises,
         'new_exercises': new_exercises,
-        'tcx_dataframes': tcx_dataframes,
+        'downloaded_tcx_files': downloaded_tcx_files,
+        'processed_csv_files': processed_csv_files,
         'azure_uploads': azure_uploads,
     }
 
@@ -345,7 +347,7 @@ __all__ = [
     'normalize_start_time',
     'list_exercises',
     'display_exercises',
-    'download_exercise_tcx',
+    'download_tcx_and_convert_to_csv',
     'filter_new_exercises',
 
     # Validation
@@ -354,10 +356,8 @@ __all__ = [
     # Azure Storage
     'is_azure_storage_enabled',
     'get_azure_storage_config',
-    'upload_csv_to_azure',
-    'upload_workout_csv',
-    'list_workout_blobs',
-    'AZURE_SDK_AVAILABLE',
+    'upload_file_to_azure_storage',
+    'list_azure_storage_blobs',
 
     # Complete workflow
     'run_polar_workflow',

@@ -1,0 +1,24 @@
+[project]
+name = "polar-workout-import"
+version = "0.1.0"
+description = "Automated Polar AccessLink workout import job"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.32.0",
+    "duckdb>=1.4.0",
+    "pandas>=2.3.0",
+    "python-dotenv>=1.0.0",
+    "azure-storage-blob>=12.27.0",
+    "azure-identity>=1.25.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+[project.scripts]
+import-workouts = "main:main"

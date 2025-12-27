@@ -181,3 +181,7 @@ cython_debug/
 /temp
 
 /notebooks/hr_data/*
+
+# PostgreSQL data directory
+/data/pg/*
+!data/pg/.gitkeep

@@ -182,7 +182,7 @@ def display_exercises(exercises: List[Dict[str, object]]) -> None:
     print("\n" + "="*80)
 
 
-def download_exercise_tcx(
+def download_tcx_and_convert_to_csv(
     exercise_id: str,
     access_token: str,
     output_dir: Path,
@@ -194,7 +194,7 @@ def download_exercise_tcx(
     vo2max: int,
     api_base: str = "https://www.polaraccesslink.com/v3",
     start_time: Optional[str] = None
-) -> Optional[pd.DataFrame]:
+) -> Optional[tuple[Path, Path]]:
     """Download and parse TCX data for an exercise.
     
     Uses convert_tcx_to_csv to convert TCX to Polar-compatible CSV format.
@@ -217,7 +217,7 @@ def download_exercise_tcx(
                    Format: "2025-05-11T10:59:46.000" (ISO format)
     
     Returns:
-        DataFrame with parsed CSV data, or None if download fails
+        Tuple of (csv_path, tcx_path) with paths to created files, or None if download fails
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -293,13 +293,12 @@ def download_exercise_tcx(
         override_time_str=override_time_str
     )
     
-    # Read the CSV and return as DataFrame
-    df_csv = pd.read_csv(csv_path, skiprows=2)  # Skip metadata rows
     print(f"✅ CSV saved: {csv_path}")
     if workout_id:
         print(f"✅ WorkoutId: {workout_id}")
     
-    return df_csv
+    # Return paths to both files
+    return (csv_path, tcx_path)
 
 
 def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Path) -> List[Dict[str, object]]:
@@ -338,6 +337,6 @@ __all__ = [
     'normalize_start_time',
     'list_exercises',
     'display_exercises',
-    'download_exercise_tcx',
+    'download_tcx_and_convert_to_csv',
     'filter_new_exercises',
 ]

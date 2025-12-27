@@ -1,0 +1,18 @@
+[project]
+name = "pg-test"
+version = "0.1.0"
+description = "PostgreSQL connection test for workout data"
+requires-python = ">=3.9"
+dependencies = [
+    "psycopg2-binary>=2.9.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
+
+[project.scripts]
+pg-test = "pg_test:test_postgres_connection"

@@ -16,17 +16,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from typing import Optional
-
-# Azure SDK imports - these are optional dependencies
-try:
-    from azure.identity import DefaultAzureCredential
-    from azure.storage.blob import BlobServiceClient, ContentSettings
-    AZURE_SDK_AVAILABLE = True
-except ImportError:
-    AZURE_SDK_AVAILABLE = False
-    DefaultAzureCredential = None
-    BlobServiceClient = None
-    ContentSettings = None
+from azure.identity import DefaultAzureCredential
+from azure.storage.blob import BlobServiceClient, ContentSettings
 
 
 def is_azure_storage_enabled() -> bool:
@@ -38,7 +29,7 @@ def is_azure_storage_enabled() -> bool:
     enabled = os.getenv('AZURE_STORAGE_ENABLED', 'false').lower() == 'true'
     account_name = os.getenv('AZURE_STORAGE_ACCOUNT_NAME')
     
-    return enabled and bool(account_name) and AZURE_SDK_AVAILABLE
+    return enabled and bool(account_name)
 
 
 def get_azure_storage_config() -> dict:
@@ -63,13 +54,6 @@ def get_azure_storage_config() -> dict:
             "Please set the storage account name or disable Azure Storage uploads."
         )
     
-    if enabled and not AZURE_SDK_AVAILABLE:
-        raise ValueError(
-            "AZURE_STORAGE_ENABLED is true but Azure SDK is not installed. "
-            "Please install azure-storage-blob and azure-identity packages:\n"
-            "  pip install azure-storage-blob azure-identity"
-        )
-    
     return {
         'account_name': account_name,
         'container_name': container_name,
@@ -77,7 +61,7 @@ def get_azure_storage_config() -> dict:
     }
 
 
-def get_blob_service_client() -> 'BlobServiceClient':
+def get_blob_service_client() -> BlobServiceClient:
     """Create a BlobServiceClient using DefaultAzureCredential.
     
     Uses DefaultAzureCredential which supports:
@@ -91,12 +75,6 @@ def get_blob_service_client() -> 'BlobServiceClient':
     Raises:
         ValueError: If Azure SDK is not available or storage account not configured
     """
-    if not AZURE_SDK_AVAILABLE:
-        raise ValueError(
-            "Azure SDK is not installed. "
-            "Please install azure-storage-blob and azure-identity packages:\n"
-            "  pip install azure-storage-blob azure-identity"
-        )
     
     config = get_azure_storage_config()
     
@@ -245,5 +223,4 @@ __all__ = [
     'get_blob_service_client',
     'upload_file_to_azure_storage',
     'list_azure_storage_blobs',
-    'AZURE_SDK_AVAILABLE',
 ]

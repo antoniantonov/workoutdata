@@ -74,7 +74,6 @@ from azure_storage import (
     get_azure_storage_config,
     upload_file_to_azure_storage,
     list_azure_storage_blobs,
-    AZURE_SDK_AVAILABLE,
 )
 
 # Standard library imports needed for run_polar_workflow
@@ -359,7 +358,6 @@ __all__ = [
     'get_azure_storage_config',
     'upload_file_to_azure_storage',
     'list_azure_storage_blobs',
-    'AZURE_SDK_AVAILABLE',
 
     # Complete workflow
     'run_polar_workflow',

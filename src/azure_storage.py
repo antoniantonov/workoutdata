@@ -111,7 +111,7 @@ def get_blob_service_client() -> 'BlobServiceClient':
     return BlobServiceClient(account_url=account_url, credential=credential)
 
 
-def upload_csv_to_azure(
+def upload_file_to_azure_storage(
     csv_path: Path,
     blob_name: Optional[str] = None,
     container_name: Optional[str] = None,
@@ -170,9 +170,18 @@ def upload_csv_to_azure(
         # Get blob client
         blob_client = container_client.get_blob_client(blob_name)
         
-        # Set content settings for CSV
+        # Determine content type based on file extension
+        file_extension = csv_path.suffix.lower()
+        if file_extension == '.tcx' or file_extension == '.xml':
+            content_type = 'application/xml'
+        elif file_extension == '.csv':
+            content_type = 'text/csv'
+        else:
+            content_type = 'application/octet-stream'  # Generic binary for unknown types
+        
+        # Set content settings based on file type
         content_settings = ContentSettings(
-            content_type='text/csv',
+            content_type=content_type,
             content_encoding='utf-8'
         )
         
@@ -196,36 +205,7 @@ def upload_csv_to_azure(
         raise
 
 
-def upload_workout_csv(
-    csv_path: Path,
-    workout_id: Optional[str] = None,
-    subfolder: str = "workouts"
-) -> Optional[str]:
-    """Upload a workout CSV file to Azure Blob Storage with organized folder structure.
-    
-    Uploads to: {container}/{subfolder}/{workout_id or filename}
-    
-    Args:
-        csv_path: Path to the workout CSV file
-        workout_id: Workout ID to use in blob name (default: extracted from filename)
-        subfolder: Subfolder in container (default: 'workouts')
-    
-    Returns:
-        URL of the uploaded blob, or None if upload is disabled/fails
-    """
-    if not is_azure_storage_enabled():
-        return None
-    
-    # Construct blob name with folder structure
-    if workout_id:
-        blob_name = f"{subfolder}/{workout_id}.csv"
-    else:
-        blob_name = f"{subfolder}/{csv_path.name}"
-    
-    return upload_csv_to_azure(csv_path, blob_name=blob_name)
-
-
-def list_workout_blobs(
+def list_azure_storage_blobs(
     container_name: Optional[str] = None,
     prefix: str = "workouts/"
 ) -> list:
@@ -263,8 +243,7 @@ __all__ = [
     'is_azure_storage_enabled',
     'get_azure_storage_config',
     'get_blob_service_client',
-    'upload_csv_to_azure',
-    'upload_workout_csv',
-    'list_workout_blobs',
+    'upload_file_to_azure_storage',
+    'list_azure_storage_blobs',
     'AZURE_SDK_AVAILABLE',
 ]

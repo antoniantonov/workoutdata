@@ -55,7 +55,7 @@ def main():
     tcx_dataframes = result['tcx_dataframes']
     
     # Display summary
-    print(f"\n✓ Workflow completed successfully!")
+    print(f"\n✅ Workflow completed successfully!")
     print(f"  - Polar User ID: {polar_user_id}")
     print(f"  - Total exercises available: {len(exercises)}")
     print(f"  - New exercises downloaded: {len(new_exercises)}")

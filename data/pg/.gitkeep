@@ -1,0 +1,3 @@
+# This directory is used by Docker for PostgreSQL data persistence
+# The .gitkeep file ensures the directory structure is tracked in git
+# But the actual database files (in data/pg/*) are gitignored

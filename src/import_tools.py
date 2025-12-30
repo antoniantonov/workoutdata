@@ -531,6 +531,104 @@ def import_to_duckdb(df: pd.DataFrame, table_name: str, db_file: str | Path = 'w
     return None
 
 
+def delete_files_from_directory(
+    glob_patterns: str | Path | Iterable[str | Path],
+    data_dir: Optional[str | Path] = None
+) -> dict[str, int]:
+    """
+    Delete files from a directory matching the specified glob patterns.
+
+    Parameters
+    ----------
+    glob_patterns : str, Path, or Iterable[str or Path]
+        Glob pattern(s) to match files to delete (e.g., "*.CSV", "*.tcx").
+    data_dir : str, Path, or None (optional)
+        Path to the directory containing files to delete. If None, loads OUTPUT_DIR from config.
+
+    Returns
+    -------
+    dict
+        Dictionary with deletion statistics:
+        {
+            "total": int,      # Total number of files matching patterns
+            "deleted": int,    # Number of files successfully deleted
+            "errors": int,     # Number of files that failed to delete
+        }
+
+    Exceptions
+    ----------
+    Any exceptions during deletion are caught internally; error details are printed,
+    and the error count is incremented in the returned dictionary.
+    """
+    # Load configuration and resolve paths
+    config = load_configuration()
+    
+    if data_dir is None:
+        data_dir_path = config['OUTPUT_DIR']
+    else:
+        data_dir_path = Path(data_dir).resolve()
+    
+    if isinstance(glob_patterns, (str, Path)):
+        patterns = [str(glob_patterns)]
+    else:
+        patterns = [str(pattern) for pattern in glob_patterns]
+
+    file_paths = []
+    for pattern in patterns:
+        file_paths.extend(sorted(data_dir_path.glob(pattern)))
+
+    # Deduplicate while preserving order
+    files = list(dict.fromkeys(file_paths))
+
+    total_files = len(files)
+    deleted_files = 0
+    error_files = 0
+
+    if not files:
+        print(f"No files found matching patterns in {data_dir_path}.")
+        return {
+            "total": total_files,
+            "deleted": deleted_files,
+            "errors": error_files,
+        }
+
+    print(f"Found {total_files} file(s) matching patterns. Processing...\n")
+    
+    for file_path in files:
+        try:
+            # Delete the file
+            file_path.unlink()
+            print(f"🗑️  Deleted: {file_path.name}")
+            deleted_files += 1
+            
+        except Exception as e:
+            error_files += 1
+            print(f"❌ Error deleting {file_path.name}: {e}")
+
+    print("\n" + "="*50)
+    print("FILE DELETION REPORT")
+    print("="*50)
+    print(f"Total files found:     {total_files}")
+    print(f"Successfully deleted:  {deleted_files}")
+    print(f"Errors encountered:    {error_files}")
+    print("="*50)
+
+    if total_files > 0:
+        deletion_rate = (deleted_files / total_files) * 100
+        print(f"Deletion rate:         {deletion_rate:.1f}%")
+
+        if error_files > 0:
+            print(f"Warning: {error_files} file(s) encountered errors during deletion.")
+
+    print("="*50)
+
+    return {
+        "total": total_files,
+        "deleted": deleted_files,
+        "errors": error_files,
+    }
+
+
 def calculate_and_import_calories(duckdb_path: str | Path, v02max_data_path: str | Path):
     """
     Process VO2max data to calculate calorie burn per HR and import to DuckDB.

@@ -265,23 +265,36 @@ def run_polar_workflow(
                     
                     # Upload to Azure Storage if enabled
                     if azure_enabled and start_time:
+                        # Generate workout ID for Azure blob name
+                        workout_id = generate_workout_id_from_start_time(start_time)
+                        
+                        # Upload CSV to polar_csv folder
                         try:
-                            # Generate workout ID for Azure blob name
-                            workout_id = generate_workout_id_from_start_time(start_time)
-                            
-                            # Upload CSV to polar_csv folder
                             csv_blob_name = f"polar_csv/{workout_id}.csv"
                             csv_blob_url = upload_file_to_azure_storage(csv_path, blob_name=csv_blob_name)
                             if csv_blob_url:
                                 azure_uploads.append(csv_blob_url)
-                            
-                            # Upload TCX to polar_tcx folder
+                        except Exception as e:
+                            print(f"⚠️ Azure CSV upload failed for workout {workout_id}: {e}")
+                            # Rename only the CSV file to indicate upload failure
+                            csv_path_obj = Path(csv_path)
+                            csv_failed_path = csv_path_obj.with_stem(csv_path_obj.stem + '_failed')
+                            csv_path_obj.rename(csv_failed_path)
+                            print(f"  Renamed CSV file to: {csv_failed_path.name}")
+                        
+                        # Upload TCX to polar_tcx folder
+                        try:
                             tcx_blob_name = f"polar_tcx/{workout_id}.tcx"
                             tcx_blob_url = upload_file_to_azure_storage(tcx_path, blob_name=tcx_blob_name)
                             if tcx_blob_url:
                                 azure_uploads.append(tcx_blob_url)
                         except Exception as e:
-                            print(f"⚠️ Azure upload failed for workout {workout_id}: {e}")
+                            print(f"⚠️ Azure TCX upload failed for workout {workout_id}: {e}")
+                            # Rename only the TCX file to indicate upload failure
+                            tcx_path_obj = Path(tcx_path)
+                            tcx_failed_path = tcx_path_obj.with_stem(tcx_path_obj.stem + '_failed')
+                            tcx_path_obj.rename(tcx_failed_path)
+                            print(f"  Renamed TCX file to: {tcx_failed_path.name}")
         else:
             print("\n⚠️ All exercises are already in the database. Nothing new to download.")
     else:

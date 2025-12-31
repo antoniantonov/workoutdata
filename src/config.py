@@ -37,6 +37,14 @@ def load_configuration() -> Dict[str, object]:
             - VO2MAX_DATA_PATH: Path to VO2max data CSV file
             - OUTPUT_DIR: Directory for output files (TCX, CSV exports)
             
+            PostgreSQL Database (optional):
+            - POSTGRES_CONNECTION_STRING: Full PostgreSQL connection string (preferred)
+            - POSTGRES_HOST: PostgreSQL server hostname
+            - POSTGRES_PORT: PostgreSQL server port (default: 5432)
+            - POSTGRES_DATABASE: Database name (default: 'workoutdata')
+            - POSTGRES_USER: PostgreSQL username
+            - POSTGRES_PASSWORD: PostgreSQL password
+            
             Azure Storage (optional):
             - AZURE_STORAGE_ENABLED: Whether Azure Storage upload is enabled
             - AZURE_STORAGE_ACCOUNT_NAME: Azure Storage account name
@@ -123,6 +131,17 @@ def load_configuration() -> Dict[str, object]:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # =============================================================================
+    # PostgreSQL Database Configuration (optional)
+    # =============================================================================
+    # Support both connection string or individual parameters
+    POSTGRES_CONNECTION_STRING = os.getenv('POSTGRES_CONNECTION_STRING')
+    POSTGRES_HOST = os.getenv('POSTGRES_HOST')
+    POSTGRES_PORT = os.getenv('POSTGRES_PORT', '5432')
+    POSTGRES_DATABASE = os.getenv('POSTGRES_DATABASE', 'workoutdata')
+    POSTGRES_USER = os.getenv('POSTGRES_USER')
+    POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
+
+    # =============================================================================
     # Azure Storage Configuration (optional)
     # =============================================================================
     AZURE_STORAGE_ENABLED = os.getenv('AZURE_STORAGE_ENABLED', 'false').lower() == 'true'
@@ -137,6 +156,10 @@ def load_configuration() -> Dict[str, object]:
     print(f"  - Tokens File: {TOKENS_FILE}")
     print(f"  - VO2max Data: {VO2MAX_DATA_PATH}")
     print(f"  - Output Dir: {OUTPUT_DIR}")
+    if POSTGRES_CONNECTION_STRING or (POSTGRES_HOST and POSTGRES_USER and POSTGRES_PASSWORD):
+        print(f"  - PostgreSQL: {POSTGRES_HOST or 'via connection string'}/{POSTGRES_DATABASE}")
+    else:
+        print(f"  - PostgreSQL: Not configured")
     if AZURE_STORAGE_ENABLED:
         print(f"  - Azure Storage: {AZURE_STORAGE_ACCOUNT_NAME}/{AZURE_STORAGE_CONTAINER_NAME}")
     else:
@@ -158,6 +181,14 @@ def load_configuration() -> Dict[str, object]:
         'DUCKDB_PATH': DUCKDB_PATH,
         'VO2MAX_DATA_PATH': VO2MAX_DATA_PATH,
         'OUTPUT_DIR': OUTPUT_DIR,
+
+        # PostgreSQL Database (optional)
+        'POSTGRES_CONNECTION_STRING': POSTGRES_CONNECTION_STRING,
+        'POSTGRES_HOST': POSTGRES_HOST,
+        'POSTGRES_PORT': POSTGRES_PORT,
+        'POSTGRES_DATABASE': POSTGRES_DATABASE,
+        'POSTGRES_USER': POSTGRES_USER,
+        'POSTGRES_PASSWORD': POSTGRES_PASSWORD,
 
         # Azure Storage (optional)
         'AZURE_STORAGE_ENABLED': AZURE_STORAGE_ENABLED,

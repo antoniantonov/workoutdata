@@ -5,11 +5,13 @@ This module provides DuckDB-specific helpers for:
 - Importing workout CSVs with proper schema management
 - Batch importing from directories
 - Importing calorie calculation data
+- Uploading DuckDB database to Azure Storage
 
 The functions handle the Polar CSV format with metadata rows and time-series data.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -17,6 +19,7 @@ import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 from IPython.display import display
 
+from azure_storage import is_azure_storage_enabled, upload_file_to_azure_storage
 from config import load_configuration
 from import_tools import fix_missing_hr, expand_table_with_missing_bpm
 
@@ -421,10 +424,67 @@ def calculate_and_import_calories(duckdb_path: str | Path, v02max_data_path: str
     import_to_duckdb(collapsed_df, 'calories_per_hr', duckdb_path, replace=True)
 
 
+def upload_database_to_azure(db_path: Optional[str | Path] = None) -> Optional[str]:
+    """
+    Upload DuckDB database file to Azure Blob Storage with timestamp.
+    
+    Only uploads if Azure Storage is enabled in configuration.
+    Creates blob name with format: duckdb/DD-MM-YYYY_HHMMSS.duckdb
+    
+    Parameters
+    ----------
+    db_path : str, Path, or None (optional)
+        Path to the DuckDB database file. If None, loads DUCKDB_PATH from config.
+    
+    Returns
+    -------
+    str or None
+        URL of uploaded blob if successful, None otherwise
+    """
+    if not is_azure_storage_enabled():
+        print("ℹ️  Azure Storage upload is disabled")
+        return None
+    
+    print(f"\n------------------------------------------------------")
+    print("Uploading database to Azure Blob Storage...")
+    print(f"------------------------------------------------------\n")
+    
+    config = load_configuration()
+    
+    if db_path is None:
+        db_path = config['DUCKDB_PATH']
+    else:
+        db_path = Path(db_path)
+    
+    if not db_path.exists():
+        print(f"⚠️  Database file not found: {db_path}")
+        return None
+    
+    try:
+        # Generate timestamp in DD-MM-YYYY_HHMMSS format using UTC
+        upload_timestamp = datetime.now(timezone.utc).strftime("%d-%m-%Y_%H%M%S")
+        
+        # Create blob name with timestamp: duckdb/30-12-2025_143022.duckdb
+        db_suffix = db_path.suffix  # e.g., ".duckdb"
+        db_blob_name = f"duckdb/{upload_timestamp}{db_suffix}"
+        
+        db_url = upload_file_to_azure_storage(db_path, blob_name=db_blob_name)
+        if db_url:
+            print(f"✅ Database uploaded successfully to: {db_url}")
+            return db_url
+        else:
+            print(f"❌ Failed to upload database")
+            return None
+    except Exception as e:
+        print(f"❌ Failed to upload database: {e}")
+        return None
+
+
 __all__ = [
     'delete_workout_by_id',
     'import_workout_csv',
     'import_workout_from_directory',
     'import_to_duckdb',
     'calculate_and_import_calories',
+    'upload_database_to_azure',
 ]

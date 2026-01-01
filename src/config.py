@@ -142,6 +142,15 @@ def load_configuration() -> Dict[str, object]:
     POSTGRES_PASSWORD = os.getenv('POSTGRES_PASSWORD')
 
     # =============================================================================
+    # Database Type Configuration
+    # =============================================================================
+    # Controls which database backend to use for imports
+    # Valid values: 'duckdb' (default) or 'postgres'
+    DATABASE_TYPE = os.getenv('DATABASE_TYPE', 'duckdb').lower()
+    if DATABASE_TYPE not in ['duckdb', 'postgres']:
+        raise ValueError(f"Invalid DATABASE_TYPE '{DATABASE_TYPE}'. Must be 'duckdb' or 'postgres'")
+
+    # =============================================================================
     # Azure Storage Configuration (optional)
     # =============================================================================
     AZURE_STORAGE_ENABLED = os.getenv('AZURE_STORAGE_ENABLED', 'false').lower() == 'true'
@@ -152,6 +161,7 @@ def load_configuration() -> Dict[str, object]:
     print(f"  - Client ID: {CLIENT_ID[:8]}...")
     print(f"  - Redirect Port: {REDIRECT_PORT}")
     print(f"  - Member ID: {MEMBER_ID if MEMBER_ID else 'Not set (will be obtained)'}")
+    print(f"  - Database Type: {DATABASE_TYPE.upper()}")
     print(f"  - DuckDB Path: {DUCKDB_PATH}")
     print(f"  - Tokens File: {TOKENS_FILE}")
     print(f"  - VO2max Data: {VO2MAX_DATA_PATH}")
@@ -175,6 +185,9 @@ def load_configuration() -> Dict[str, object]:
         'TOKEN_URL': TOKEN_URL,
         'API_BASE': API_BASE,
         'ALLOW_PORT_FALLBACK': ALLOW_PORT_FALLBACK,
+
+        # Database Configuration
+        'DATABASE_TYPE': DATABASE_TYPE,
 
         # File Paths
         'TOKENS_FILE': TOKENS_FILE,

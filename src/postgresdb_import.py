@@ -11,6 +11,7 @@ Connects to Azure PostgreSQL database using connection string from environment.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -133,80 +134,107 @@ def ensure_database_exists():
         print(f"⚠️  Could not create database (may already exist or require admin): {e}")
 
 
-def ensure_tables_exist(conn):
+def clean_column_name(col_name: str) -> str:
     """
-    Ensure workout_metadata and timeseries tables exist in PostgreSQL database.
-    Creates tables with appropriate schema if they don't exist.
+    Clean column name by removing special characters.
+    Keeps only: letters, numbers, parentheses (), forward/back slashes /\
+    
+    Parameters
+    ----------
+    col_name : str
+        Original column name
+    
+    Returns
+    -------
+    str
+        Cleaned column name
+    """
+    # Keep only letters, numbers, spaces, parentheses, and slashes
+    # Pattern: keep alphanumeric, space, (, ), /, \
+    cleaned = re.sub(r'[^a-zA-Z0-9\s()/\\]', '', col_name)
+    # Clean up multiple spaces
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def ensure_table_exists(conn, table_name: str, df: pd.DataFrame, 
+                        primary_key: Optional[str] = None, 
+                        foreign_keys: Optional[dict] = None, 
+                        indexes: Optional[list] = None,
+                        column_type_overrides: Optional[dict] = None):
+    """
+    Ensure a table exists in PostgreSQL database with schema inferred from DataFrame.
+    Creates table if it doesn't exist.
     
     Parameters
     ----------
     conn : psycopg.Connection
         Active PostgreSQL connection
+    table_name : str
+        Name of the table to create
+    df : pd.DataFrame
+        DataFrame whose columns will be used to infer the table schema
+    primary_key : str, optional
+        Name of the primary key column
+    foreign_keys : dict, optional
+        Dictionary mapping column names to foreign key constraints
+        Example: {'workoutId': 'REFERENCES workout_metadata("workoutId") ON DELETE CASCADE'}
+    indexes : list, optional
+        List of column names to create indexes on
+    column_type_overrides : dict, optional
+        Dictionary mapping column names to specific PostgreSQL types
+        Example: {'workoutId': 'VARCHAR(50)', 'id': 'SERIAL'}
     """
+    # Infer column types from DataFrame
+    columns = {}
+    for col in df.columns:
+        dtype = df[col].dtype
+        if pd.api.types.is_integer_dtype(dtype):
+            columns[col] = 'INT'
+        elif pd.api.types.is_float_dtype(dtype):
+            columns[col] = 'FLOAT'
+        else:
+            # Default to TEXT for string/object types
+            columns[col] = 'TEXT'
+    
+    # Apply overrides
+    if column_type_overrides:
+        columns.update(column_type_overrides)
+    
     with conn.cursor() as cur:
-        # Create workout_metadata table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workout_metadata (
-                "workoutId" VARCHAR(50) PRIMARY KEY,
-                "Date" VARCHAR(20),
-                "Start time" VARCHAR(20),
-                "Duration" VARCHAR(20),
-                "Distance (km)" FLOAT,
-                "Calories" INT,
-                "Fat percentage of calories (%)" FLOAT,
-                "Average heart rate (bpm)" INT,
-                "Maximum heart rate (bpm)" INT,
-                "Average running cadence (spm)" FLOAT,
-                "Average speed (km/h)" FLOAT,
-                "Maximum speed (km/h)" FLOAT,
-                "Ascent (m)" FLOAT,
-                "Descent (m)" FLOAT,
-                "Notes" TEXT,
-                "Height (cm)" FLOAT,
-                "Weight (kg)" FLOAT,
-                "VO2max" INT,
-                "Sport" VARCHAR(50),
-                "Training load" FLOAT,
-                "Swimming style" VARCHAR(50),
-                "Pool length (m)" FLOAT,
-                "HR max (bpm)" INT,
-                "HR sit (bpm)" INT,
-                "Name" VARCHAR(100),
-                "Feeling" VARCHAR(50),
-                "Polar Flow URL" TEXT,
-                "Fit file" TEXT,
-                "Device" VARCHAR(100)
-            )
-        """)
+        # Build column definitions
+        col_defs = []
+        for col_name, col_type in columns.items():
+            col_def = f'"{col_name}" {col_type}'
+            
+            # Add primary key constraint
+            if primary_key and col_name == primary_key:
+                col_def += ' PRIMARY KEY'
+            
+            # Add foreign key constraint
+            if foreign_keys and col_name in foreign_keys:
+                col_def += f' {foreign_keys[col_name]}'
+            
+            col_defs.append(col_def)
         
-        # Create timeseries table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS timeseries (
-                id SERIAL PRIMARY KEY,
-                "workoutId" VARCHAR(50) REFERENCES workout_metadata("workoutId") ON DELETE CASCADE,
-                "Sample rate" VARCHAR(10),
-                "Time" VARCHAR(20),
-                "HR (bpm)" FLOAT,
-                "Speed (km/h)" FLOAT,
-                "Pace (min/km)" VARCHAR(20),
-                "Cadence (spm)" FLOAT,
-                "Altitude (m)" FLOAT,
-                "Stride length (m)" FLOAT,
-                "Distances (m)" FLOAT,
-                "Latitudes (°)" FLOAT,
-                "Longitudes (°)" FLOAT,
-                "Temperatures (C)" FLOAT
+        # Create table
+        create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                {', '.join(col_defs)}
             )
-        """)
+        """
+        cur.execute(create_table_sql)
         
-        # Create index on workoutId for faster queries
-        cur.execute("""
-            CREATE INDEX IF NOT EXISTS idx_timeseries_workoutid 
-            ON timeseries("workoutId")
-        """)
+        # Create indexes
+        if indexes:
+            for idx_col in indexes:
+                idx_name = f"idx_{table_name}_{idx_col.replace(' ', '_').lower()}"
+                cur.execute(f"""
+                    CREATE INDEX IF NOT EXISTS {idx_name}
+                    ON {table_name}("{idx_col}")
+                """)
         
         conn.commit()
-        print("✅ Tables ensured: workout_metadata, timeseries")
 
 
 def delete_workout_by_id(workout_id: str, conn_string: Optional[str] = None):
@@ -278,6 +306,9 @@ def import_workout_csv(csv_path: str, conn, approved_columns=None):
         # -- first row holds file-wide metadata
         metadata_df = pd.read_csv(csv_path, nrows=1)
         
+        # Clean column names in metadata
+        metadata_df.columns = [clean_column_name(col) for col in metadata_df.columns]
+        
         # create "DD-MM-YYYY_HHMMSS" style id (remove ":" so it is filename-safe)
         metadata_df["workoutId"] = (
             metadata_df["Date"].astype(str).str.strip() + "_" +
@@ -287,9 +318,15 @@ def import_workout_csv(csv_path: str, conn, approved_columns=None):
         print(f"Workout ID: {workoutId}")
     
         # ------------------------------------------------------------------
-        # 2.  Ensure tables exist
+        # 2.  Ensure workout_metadata table exists
         # ------------------------------------------------------------------
-        ensure_tables_exist(conn)
+        ensure_table_exists(
+            conn, 
+            'workout_metadata', 
+            metadata_df,
+            primary_key='workoutId',
+            column_type_overrides={'workoutId': 'VARCHAR(50)'}
+        )
         
         # Check if workout already exists
         with conn.cursor() as cur:
@@ -328,6 +365,10 @@ def import_workout_csv(csv_path: str, conn, approved_columns=None):
         # 3.  Read the time-series rows, add FK, fix HR gaps
         # ------------------------------------------------------------------
         df = pd.read_csv(csv_path, skiprows=2)
+        
+        # Clean column names in timeseries
+        df.columns = [clean_column_name(col) for col in df.columns]
+        
         df["workoutId"] = workoutId
         df = fix_missing_hr(df)
         
@@ -335,10 +376,25 @@ def import_workout_csv(csv_path: str, conn, approved_columns=None):
         # 4.  Filter columns if approved_columns specified
         # ------------------------------------------------------------------
         if approved_columns is not None:
+            # Clean approved column names too
+            approved_columns_clean = [clean_column_name(col) for col in approved_columns]
             # Ensure required ID column retained
-            approved_set = set(approved_columns) | {"workoutId"}
+            approved_set = set(approved_columns_clean) | {"workoutId"}
             # Keep only approved columns that exist in DataFrame
             df = df[[col for col in df.columns if col in approved_set]]
+        
+        # ------------------------------------------------------------------
+        # Ensure timeseries table exists
+        # ------------------------------------------------------------------
+        ensure_table_exists(
+            conn, 
+            'timeseries', 
+            df,
+            primary_key='id',
+            foreign_keys={'workoutId': 'REFERENCES workout_metadata("workoutId") ON DELETE CASCADE'},
+            indexes=['workoutId'],
+            column_type_overrides={'id': 'SERIAL', 'workoutId': 'VARCHAR(50)'}
+        )
         
         # ------------------------------------------------------------------
         # 5.  Insert into timeseries
@@ -630,7 +686,8 @@ def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Opt
 __all__ = [
     'get_postgres_connection',
     'ensure_database_exists',
-    'ensure_tables_exist',
+    'clean_column_name',
+    'ensure_table_exists',
     'delete_workout_by_id',
     'import_workout_csv',
     'import_workout_from_directory',

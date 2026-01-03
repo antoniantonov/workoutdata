@@ -180,8 +180,8 @@ def run_polar_workflow(
     print("Step 3: Registering user...")
     polar_user_id = register_user(
         access_token=access_token,
-        member_id=config['MEMBER_ID'],
-        api_base=config['API_BASE']
+        config=config,
+        member_id=config['MEMBER_ID']
     )
     print()
     
@@ -206,18 +206,15 @@ def run_polar_workflow(
         # Display all exercises
         display_exercises(exercises)
         
-        # Get db_path from config for user info caching and filtering
-        db_path = config.get('DUCKDB_PATH')
-        
         # Filter to only new exercises (not already in database)
-        new_exercises = filter_new_exercises(exercises, db_path)
+        new_exercises = filter_new_exercises(exercises, config)
         
         if new_exercises:
             print(f"\n✅ Found {len(new_exercises)} new exercise(s) to download")
             
             # Fetch user info ONCE before processing exercises
             print("\nFetching user info for CSV conversion parameters...")
-            user_info = get_user_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            user_info = get_user_info(polar_user_id, access_token, config=config)
             
             # Extract user name with default
             name = "Anton Antonov "  # Default
@@ -226,7 +223,7 @@ def run_polar_workflow(
                 print(f"✅ User name: {name.strip()}")
             
             # Get physical information using dedicated function
-            physical_info = get_physical_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            physical_info = get_physical_info(polar_user_id, access_token, config=config)
             
             # Extract parameters from physical_info
             weight = physical_info.get('weight', 0.0)

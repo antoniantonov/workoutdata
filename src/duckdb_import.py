@@ -24,6 +24,54 @@ from config import load_configuration
 from import_tools import fix_missing_hr, expand_table_with_missing_bpm
 
 
+def get_existing_workout_ids(config: dict) -> set:
+    """Get set of existing workout IDs from DuckDB database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    set
+        Set of workout IDs that already exist in workout_metadata table
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    existing_ids = set()
+    
+    try:
+        db_path = config['DUCKDB_PATH']
+        con = duckdb.connect(str(db_path))
+        try:
+            # Check if table exists
+            result = con.execute("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_name = 'workout_metadata'
+            """).fetchone()
+            
+            if result:
+                # Get all existing workout IDs
+                rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
+                existing_ids = {row[0] for row in rows}
+                print(f"✅ Found {len(existing_ids)} existing workouts in DuckDB database")
+            else:
+                print("⚠️ workout_metadata table does not exist yet in DuckDB")
+        finally:
+            con.close()
+    except Exception as e:
+        print(f"⚠️  Error checking existing workouts in DuckDB: {e}")
+    
+    return existing_ids
+
+
 def delete_workout_by_id(workout_id: str, db_path: Optional[str | Path] = None):
     """
     Delete all rows with the specified workoutId from both workout_metadata and timeseries tables.
@@ -481,6 +529,7 @@ def upload_database_to_azure(db_path: Optional[str | Path] = None) -> Optional[s
 
 
 __all__ = [
+    'get_existing_workout_ids',
     'delete_workout_by_id',
     'import_workout_csv',
     'import_workout_from_directory',

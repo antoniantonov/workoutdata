@@ -14,12 +14,14 @@ from typing import Dict, List, Optional
 
 import duckdb  # type: ignore
 import pandas as pd  # type: ignore
+import psycopg  # type: ignore
 import requests  # type: ignore
 
 from common_tools import get_field
 from config import load_configuration
 from converters import convert_tcx_to_csv
-from postgresdb_import import get_postgres_connection
+import duckdb_import
+import postgresdb_import
 
 
 # =============================================================================
@@ -54,77 +56,6 @@ def generate_workout_id_from_start_time(start_time_str: str) -> str:
     
     # Format: DD-MM-YYYY_HHMMSS
     return dt.strftime('%d-%m-%Y_%H%M%S')
-
-
-def get_existing_workout_ids(db_path: Optional[Path] = None) -> set:
-    """Get set of existing workout IDs from the database.
-    
-    Supports both DuckDB and PostgreSQL based on DATABASE_TYPE configuration.
-    
-    Args:
-        db_path: Path to DuckDB database file (optional, loads from config if None).
-                 Ignored when using PostgreSQL.
-    
-    Returns:
-        Set of workout IDs that already exist in workout_metadata table
-    """
-    existing_ids = set()
-    
-    try:
-        config = load_configuration()
-        db_type = config.get('DATABASE_TYPE', 'duckdb')
-        
-        if db_type == 'postgres':
-            # PostgreSQL connection
-            conn = get_postgres_connection()
-            try:
-                with conn.cursor() as cur:
-                    # Check if table exists
-                    cur.execute("""
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables 
-                            WHERE table_name = 'workout_metadata'
-                        )
-                    """)
-                    table_exists = cur.fetchone()[0]
-                    
-                    if table_exists:
-                        # Get all existing workout IDs
-                        cur.execute('SELECT "workoutId" FROM workout_metadata')
-                        rows = cur.fetchall()
-                        existing_ids = {row[0] for row in rows}
-                        print(f"✅ Found {len(existing_ids)} existing workouts in PostgreSQL database")
-                    else:
-                        print("⚠️ workout_metadata table does not exist yet in PostgreSQL")
-            finally:
-                conn.close()
-        
-        else:  # Default to DuckDB
-            if db_path is None:
-                db_path = config['DUCKDB_PATH']
-            
-            con = duckdb.connect(str(db_path))
-            try:
-                # Check if table exists
-                result = con.execute("""
-                    SELECT table_name FROM information_schema.tables 
-                    WHERE table_name = 'workout_metadata'
-                """).fetchone()
-                
-                if result:
-                    # Get all existing workout IDs
-                    rows = con.execute("SELECT workoutId FROM workout_metadata").fetchall()
-                    existing_ids = {row[0] for row in rows}
-                    print(f"✅ Found {len(existing_ids)} existing workouts in DuckDB database")
-                else:
-                    print("⚠️ workout_metadata table does not exist yet in DuckDB")
-            finally:
-                con.close()
-    
-    except Exception as e:
-        print(f"⚠️  Error checking existing workouts: {e}")
-    
-    return existing_ids
 
 
 # =============================================================================
@@ -339,20 +270,31 @@ def download_tcx_and_convert_to_csv(
     return (csv_path, tcx_path)
 
 
-def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Optional[Path] = None) -> List[Dict[str, object]]:
+def filter_new_exercises(exercises: List[Dict[str, object]], config: dict) -> List[Dict[str, object]]:
     """Filter exercises to only include those not already in the database.
     
     Supports both DuckDB and PostgreSQL based on DATABASE_TYPE configuration.
     
     Args:
         exercises: List of exercise dictionaries from Polar API
-        db_path: Path to DuckDB database file (optional, loads from config if None).
-                 Ignored when using PostgreSQL.
+        config: Configuration dictionary (must contain DATABASE_TYPE)
     
     Returns:
         List of exercises that don't have a corresponding workoutId in the database
+    
+    Raises:
+        ValueError: If config is None
     """
-    existing_ids = get_existing_workout_ids(db_path)
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    db_type = config.get('DATABASE_TYPE', 'duckdb')
+    
+    # Get existing workout IDs from the appropriate database
+    if db_type == 'postgres':
+        existing_ids = postgresdb_import.get_existing_workout_ids(config)
+    else:  # Default to DuckDB
+        existing_ids = duckdb_import.get_existing_workout_ids(config)
     
     new_exercises = []
     for ex in exercises:
@@ -372,7 +314,6 @@ def filter_new_exercises(exercises: List[Dict[str, object]], db_path: Optional[P
 __all__ = [
     # Workout ID helpers
     'generate_workout_id_from_start_time',
-    'get_existing_workout_ids',
     
     # Exercise management
     'normalize_start_time',

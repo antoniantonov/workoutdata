@@ -17,11 +17,63 @@ from typing import Iterable, Optional
 
 import pandas as pd  # type: ignore
 import psycopg  # type: ignore
-from psycopg import sql
+from psycopg import sql # type: ignore
 from IPython.display import display
 
 from config import load_configuration
 from import_tools import fix_missing_hr, expand_table_with_missing_bpm
+
+
+def get_existing_workout_ids(config: dict) -> set:
+    """Get set of existing workout IDs from PostgreSQL database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    set
+        Set of workout IDs that already exist in workout_metadata table
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    existing_ids = set()
+    
+    try:
+        conn = get_postgres_connection()
+        try:
+            with conn.cursor() as cur:
+                # Check if table exists
+                cur.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_name = 'workout_metadata'
+                    )
+                """)
+                table_exists = cur.fetchone()[0]
+                
+                if table_exists:
+                    # Get all existing workout IDs
+                    cur.execute('SELECT "workoutId" FROM workout_metadata')
+                    rows = cur.fetchall()
+                    existing_ids = {row[0] for row in rows}
+                    print(f"✅ Found {len(existing_ids)} existing workouts in PostgreSQL database")
+                else:
+                    print("⚠️ workout_metadata table does not exist yet in PostgreSQL")
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"⚠️  Error checking existing workouts in PostgreSQL: {e}")
+    
+    return existing_ids
 
 
 def get_postgres_connection():
@@ -684,6 +736,7 @@ def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Opt
 
 
 __all__ = [
+    'get_existing_workout_ids',
     'get_postgres_connection',
     'ensure_database_exists',
     'clean_column_name',

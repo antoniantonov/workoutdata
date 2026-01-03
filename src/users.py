@@ -145,20 +145,27 @@ def get_default_physical_info() -> Dict[str, object]:
 def get_user_info(
     member_or_user_id: str,
     access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None
+    config: Dict
 ) -> Optional[Dict[str, object]]:
     """Fetch user info from Polar API to get polar-user-id.
     
     Args:
         member_or_user_id: Member ID or user ID to fetch info for
         access_token: OAuth access token
-        api_base: Polar API base URL
-        db_path: Optional path to DuckDB database for saving user info
+        config: Configuration dictionary (contains API_BASE and database path)
     
     Returns:
         Dictionary containing user info, or None if request fails
+    
+    Raises:
+        ValueError: If config is None
     """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    # Get API base URL from config or use default
+    api_base = config.get('API_BASE', 'https://www.polaraccesslink.com/v3')
+    
     print(f"Fetching user info for ID: {member_or_user_id}...")
     
     headers = {
@@ -172,18 +179,24 @@ def get_user_info(
         user_info = response.json()
         print(f"✅ User info retrieved")
         
-        # Save to database if db_path provided
-        if db_path and 'polar-user-id' in user_info:
-            user_data = {
-                'polar_user_id': int(user_info['polar-user-id']),
-                'first_name': user_info.get('first-name'),
-                'last_name': user_info.get('last-name'),
-                'birthdate': user_info.get('birthdate'),
-                'gender': user_info.get('gender')
-            }
-            # Remove None values
-            user_data = {k: v for k, v in user_data.items() if v is not None}
-            save_userinfo_to_db(db_path, user_data)
+        # Save to database if config provided
+        if config and 'polar-user-id' in user_info:
+            # Get database path based on database type
+            db_type = config.get('DATABASE_TYPE', 'duckdb')
+            if db_type == 'duckdb':
+                db_path = config.get('DUCKDB_PATH')
+                if db_path:
+                    user_data = {
+                        'polar_user_id': int(user_info['polar-user-id']),
+                        'first_name': user_info.get('first-name'),
+                        'last_name': user_info.get('last-name'),
+                        'birthdate': user_info.get('birthdate'),
+                        'gender': user_info.get('gender')
+                    }
+                    # Remove None values
+                    user_data = {k: v for k, v in user_data.items() if v is not None}
+                    save_userinfo_to_db(db_path, user_data)
+            # PostgreSQL user info caching not yet implemented
         
         return user_info
     else:
@@ -193,8 +206,8 @@ def get_user_info(
 
 def register_user(
     access_token: str,
-    member_id: Optional[str] = None,
-    api_base: str = "https://www.polaraccesslink.com/v3"
+    config: Dict,
+    member_id: Optional[str] = None
 ) -> Optional[int]:
     """Register user with Polar AccessLink API (idempotent).
     
@@ -203,14 +216,21 @@ def register_user(
     Args:
         access_token: OAuth access token
         member_id: Optional Polar member ID
-        api_base: Polar API base URL
+        config: Configuration dictionary (contains API_BASE)
     
     Returns:
         polar_user_id if successful, None otherwise
     
     Raises:
+        ValueError: If config is None
         Exception: If registration fails with unexpected status code
     """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    # Get API base URL from config
+    api_base = config.get('API_BASE', 'https://www.polaraccesslink.com/v3')
+    
     print("Registering user...")
 
     headers = {
@@ -245,7 +265,7 @@ def register_user(
         
         # Fetch user info to get polar-user-id
         user_id_to_fetch = member_id if member_id else "self"
-        user_info = get_user_info(user_id_to_fetch, access_token, api_base)
+        user_info = get_user_info(user_id_to_fetch, access_token, config)
         
         if user_info:
             polar_user_id = user_info.get('polar-user-id')
@@ -265,8 +285,7 @@ def register_user(
 def get_physical_info(
     polar_user_id: int,
     access_token: str,
-    api_base: str = "https://www.polaraccesslink.com/v3",
-    db_path: Optional[Path] = None
+    config: Dict
 ) -> Dict[str, object]:
     """Get user's physical information from Polar API.
     
@@ -278,8 +297,7 @@ def get_physical_info(
     Args:
         polar_user_id: Polar user ID
         access_token: OAuth access token
-        api_base: Polar API base URL
-        db_path: Optional path to DuckDB database for loading/saving physical info
+        config: Configuration dictionary (contains API_BASE and database path)
     
     Returns:
         Dictionary containing physical information with structure:
@@ -293,7 +311,24 @@ def get_physical_info(
             "vo2-max": int or None,
             ... (other fields from API if available)
         }
+    
+    Raises:
+        ValueError: If config is None
     """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    # Get API base URL from config
+    api_base = config.get('API_BASE', 'https://www.polaraccesslink.com/v3')
+    
+    # Get database path from config if provided (only for DuckDB)
+    db_path = None
+    if config:
+        db_type = config.get('DATABASE_TYPE', 'duckdb')
+        if db_type == 'duckdb':
+            db_path = config.get('DUCKDB_PATH')
+        # PostgreSQL user info caching not yet implemented
+    
     # Try to get from database first as fallback
     db_info = None
     if db_path:

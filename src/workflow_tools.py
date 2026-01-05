@@ -51,7 +51,6 @@ from converters import convert_tcx_to_csv
 # Re-export exercise management
 from exercises import (
     generate_workout_id_from_start_time,
-    get_existing_workout_ids,
     normalize_start_time,
     list_exercises,
     display_exercises,
@@ -353,7 +352,6 @@ __all__ = [
 
     # Exercise management
     'generate_workout_id_from_start_time',
-    'get_existing_workout_ids',
     'normalize_start_time',
     'list_exercises',
     'display_exercises',

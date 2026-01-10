@@ -62,6 +62,16 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
   - `hr-plotting-v0.1.ipynb` – **DEPRECATED**: Do not use or modify. Kept only for educational purposes for human developers.
   - `calories_calculator.ipynb` – calorie-related analysis.
   - `polar_accesslink_workflow.ipynb` – Polar AccessLink API integration.
+- **Garmin Import Module** (in `notebooks/`):
+  - `garmin_import.py` – Parses Garmin FIT files and extracts GPS coordinates and elevation into DuckDB.
+    - `parse_fit_file(fit_path)` – Parses a FIT file and returns first GPS coordinates and elevation.
+    - `import_garmin_fit(fit_path, con)` – Imports single FIT file into `garmin_gps_data` table.
+    - `import_garmin_from_directory(glob_patterns, data_dir, db_path)` – Batch imports FIT files.
+    - `delete_garmin_workout_by_id(workout_id, db_path)` – Removes workout from garmin_gps_data table.
+    - `get_garmin_workout(workout_id, db_path)` – Retrieves a workout by ID.
+    - `list_garmin_workouts(db_path, limit)` – Lists all Garmin workouts.
+  - **DuckDB Table**: `garmin_gps_data` with schema: `workoutId VARCHAR PRIMARY KEY, latitude DOUBLE, longitude DOUBLE, elevation DOUBLE, start_time TIMESTAMP, source_file VARCHAR`
+  - **Dependencies**: Requires `fitparse` package (`pip install fitparse`)
 - **Polar AccessLink Modules** (in `notebooks/`):
   - `workflow_tools.py` – Main entry point, re-exports all functions from submodules.
   - `tokens.py` – Token management (save, load, exchange, refresh OAuth tokens, token validation).
@@ -111,6 +121,20 @@ delete_workout_by_id("hr_data/database_v2.duckdb", "11-05-2025_105946")
 
 # Case-insensitive prefix match
 con.execute("SELECT * FROM timeseries WHERE workoutId ILIKE ?", (f"{prefix}%",))
+
+# Import Garmin FIT file
+from notebooks.garmin_import import import_garmin_fit, import_garmin_from_directory
+import duckdb
+con = duckdb.connect("hr_data/database_v2.duckdb")
+result = import_garmin_fit("path/to/workout.fit", con)
+# Returns: 'imported', 'skipped', or 'error'
+
+# Batch import Garmin FIT files
+stats = import_garmin_from_directory(["*.fit", "*.FIT"], data_dir="garmin_data/")
+# Returns: {"total": int, "processed": int, "skipped": int, "errors": int}
+
+# Query Garmin GPS data
+con.execute("SELECT * FROM garmin_gps_data WHERE workoutId = ?", ("11-05-2025_105946",))
 ```
 
 ## 10. When Unsure

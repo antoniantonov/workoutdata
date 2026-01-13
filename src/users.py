@@ -18,7 +18,6 @@ from typing import Dict, List, Optional
 import requests  # type: ignore
 
 from common_tools import get_field
-from config import load_configuration
 
 
 # =============================================================================
@@ -57,7 +56,7 @@ def _get_db_context(config: Dict):
     
     if db_type == 'postgres':
         import postgresdb_import
-        return postgresdb_import.get_postgres_connection()
+        return postgresdb_import.get_postgres_connection(config)
     else:
         return config.get('DUCKDB_PATH')
 

@@ -33,20 +33,6 @@ from users import (
     get_physical_info,
 )
 
-# Re-export database functions from DB-specific modules
-from duckdb_import import (
-    ensure_userinfo_table as ensure_userinfo_table_duckdb,
-    get_userinfo_from_db as get_userinfo_from_db_duckdb,
-    save_userinfo_to_db as save_userinfo_to_db_duckdb,
-    get_default_physical_info,
-)
-
-from postgresdb_import import (
-    ensure_userinfo_table as ensure_userinfo_table_postgres,
-    get_userinfo_from_db as get_userinfo_from_db_postgres,
-    save_userinfo_to_db as save_userinfo_to_db_postgres,
-)
-
 # Re-export OAuth flow
 from oauth import (
     create_callback_handler,
@@ -91,19 +77,21 @@ from typing import Dict
 
 
 def run_polar_workflow(
+    config: Dict,
     tokens_file: Path = Path("tokens_polar.json"),
     timeout: int = 300
 ) -> Dict[str, object]:
     """Execute complete Polar AccessLink workflow.
     
     This function orchestrates the entire workflow:
-    1. Load configuration from environment variables
+    1. Validate configuration
     2. Check token validity and run authorization if needed
     3. Register user (idempotent)
     4. List and download all new exercises (not already in database)
     5. Upload CSV files to Azure Storage (if enabled)
     
     Args:
+        config: Configuration dictionary from load_configuration()
         tokens_file: Path to token storage file (default: tokens_polar.json)
         timeout: Timeout for authorization flow in seconds (default: 300)
     
@@ -121,13 +109,15 @@ def run_polar_workflow(
         ValueError: If configuration is invalid
         Exception: If any step fails
     """
+    if config is None:
+        raise ValueError("config parameter is required")
+    
     print("="*80)
     print("POLAR ACCESSLINK COMPLETE WORKFLOW")
     print("="*80 + "\n")
     
-    # Step 1: Load configuration
-    print("Step 1: Loading configuration...")
-    config = load_configuration()
+    # Step 1: Use provided configuration
+    print("Step 1: Using provided configuration...")
     output_dir = config['OUTPUT_DIR']
     print()
     
@@ -328,9 +318,6 @@ def run_polar_workflow(
 
 
 __all__ = [
-    # Configuration
-    'load_configuration',
-
     # Token management
     'save_tokens',
     'load_tokens',
@@ -343,29 +330,6 @@ __all__ = [
     'get_user_info',
     'register_user',
     'get_physical_info',
-    
-    # Database functions (DuckDB)
-    'ensure_userinfo_table_duckdb',
-    'get_userinfo_from_db_duckdb',
-    'save_userinfo_to_db_duckdb',
-    'get_default_physical_info',
-    
-    # Database functions (PostgreSQL)
-    'ensure_userinfo_table_postgres',
-    'get_userinfo_from_db_postgres',
-    'save_userinfo_to_db_postgres',
-
-    # Common tools
-    'get_field',
-
-    # OAuth flow
-    'create_callback_handler',
-    'start_callback_server',
-    'run_authorization_flow',
-    'complete_token_exchange',
-
-    # TCX conversion
-    'convert_tcx_to_csv',
 
     # Exercise management
     'generate_workout_id_from_start_time',

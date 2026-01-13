@@ -12,13 +12,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import duckdb  # type: ignore
-import pandas as pd  # type: ignore
-import psycopg  # type: ignore
 import requests  # type: ignore
 
 from common_tools import get_field
-from config import load_configuration
 from converters import convert_tcx_to_csv
 import duckdb_import
 import postgresdb_import

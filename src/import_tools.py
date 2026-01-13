@@ -201,6 +201,7 @@ def expand_table_with_missing_bpm(df: pd.DataFrame) -> pd.DataFrame:
 
 def delete_files_from_directory(
     glob_patterns: str | Path | Iterable[str | Path],
+    config: dict,
     data_dir: Optional[str | Path] = None
 ) -> dict[str, int]:
     """
@@ -210,8 +211,10 @@ def delete_files_from_directory(
     ----------
     glob_patterns : str, Path, or Iterable[str or Path]
         Glob pattern(s) to match files to delete (e.g., "*.CSV", "*.tcx").
+    config : dict
+        Configuration dictionary from load_configuration()
     data_dir : str, Path, or None (optional)
-        Path to the directory containing files to delete. If None, loads OUTPUT_DIR from config.
+        Path to the directory containing files to delete. If None, uses config['OUTPUT_DIR'].
 
     Returns
     -------
@@ -223,13 +226,18 @@ def delete_files_from_directory(
             "errors": int,     # Number of files that failed to delete
         }
 
+    Raises
+    ------
+    ValueError
+        If config is None
+
     Exceptions
     ----------
     Any exceptions during deletion are caught internally; error details are printed,
     and the error count is incremented in the returned dictionary.
     """
-    # Load configuration and resolve paths
-    config = load_configuration()
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
     
     if data_dir is None:
         data_dir_path = config['OUTPUT_DIR']

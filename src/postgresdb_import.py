@@ -164,7 +164,7 @@ def get_existing_workout_ids(config: dict) -> set:
     existing_ids = set()
     
     try:
-        conn = get_postgres_connection()
+        conn = get_postgres_connection(config)
         try:
             with conn.cursor() as cur:
                 # Check if table exists
@@ -192,9 +192,14 @@ def get_existing_workout_ids(config: dict) -> set:
     return existing_ids
 
 
-def get_postgres_connection():
+def get_postgres_connection(config: dict):
     """
-    Get a connection to the PostgreSQL database using configuration from environment.
+    Get a connection to the PostgreSQL database using configuration.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
     
     Returns
     -------
@@ -204,9 +209,10 @@ def get_postgres_connection():
     Raises
     ------
     ValueError
-        If required PostgreSQL configuration is missing
+        If config is None or required PostgreSQL configuration is missing
     """
-    config = load_configuration()
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
     
     # Check if we have connection string or individual parameters
     conn_string = config.get('POSTGRES_CONNECTION_STRING')
@@ -239,12 +245,24 @@ def get_postgres_connection():
         )
 
 
-def ensure_database_exists():
+def ensure_database_exists(config: dict):
     """
     Ensure the PostgreSQL database exists. If not, create it.
     Note: This requires connecting to the default 'postgres' database first.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Raises
+    ------
+    ValueError
+        If config is None or POSTGRES_DATABASE not configured
     """
-    config = load_configuration()
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
     database_name = config.get('POSTGRES_DATABASE')
     
     if not database_name:
@@ -405,7 +423,7 @@ def ensure_table_exists(conn, table_name: str, df: pd.DataFrame,
         conn.commit()
 
 
-def delete_workout_by_id(workout_id: str, conn_string: Optional[str] = None):
+def delete_workout_by_id(workout_id: str, config: dict, conn_string: Optional[str] = None):
     """
     Delete all rows with the specified workoutId from both workout_metadata and timeseries tables.
     
@@ -413,14 +431,24 @@ def delete_workout_by_id(workout_id: str, conn_string: Optional[str] = None):
     ----------
     workout_id : str
         The workout ID to delete.
+    config : dict
+        Configuration dictionary from load_configuration()
     conn_string : str or None (optional)
-        PostgreSQL connection string. If None, loads from config.
+        PostgreSQL connection string. If None, uses get_postgres_connection(config).
+    
+    Raises
+    ------
+    ValueError
+        If config is None
     """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
     try:
         if conn_string:
             conn = psycopg.connect(conn_string)
         else:
-            conn = get_postgres_connection()
+            conn = get_postgres_connection(config)
         
         with conn.cursor() as cur:
             # Delete from timeseries first (foreign key constraint)
@@ -615,6 +643,7 @@ def import_workout_csv(csv_path: str, conn, approved_columns=None):
 
 def import_workout_from_directory(
     glob_patterns: str | Path | Iterable[str | Path],
+    config: dict,
     data_dir: Optional[str | Path] = None,
     conn_string: Optional[str] = None
 ) -> dict[str, int]:
@@ -625,10 +654,12 @@ def import_workout_from_directory(
     ----------
     glob_patterns : str, Path, or Iterable[str or Path]
         Glob pattern(s) to match CSV files (e.g., "Anton_Antonov*.CSV").
+    config : dict
+        Configuration dictionary from load_configuration()
     data_dir : str, Path, or None (optional)
-        Path to the directory containing workout CSV files. If None, loads OUTPUT_DIR from config.
+        Path to the directory containing workout CSV files. If None, uses config['OUTPUT_DIR'].
     conn_string : str or None (optional)
-        PostgreSQL connection string. If None, loads from config.
+        PostgreSQL connection string. If None, uses get_postgres_connection(config).
 
     Returns
     -------
@@ -641,13 +672,18 @@ def import_workout_from_directory(
             "errors": int,     # Number of files that failed to import
         }
 
+    Raises
+    ------
+    ValueError
+        If config is None
+
     Exceptions
     ----------
     Any exceptions during import are caught internally; error details are printed,
     and the error count is incremented in the returned dictionary.
     """
-    # Load configuration and resolve paths
-    config = load_configuration()
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
     
     if data_dir is None:
         data_dir_path = config['OUTPUT_DIR']
@@ -685,13 +721,13 @@ def import_workout_from_directory(
     print(f"Found {total_files} CSV file(s). Processing...\n")
     
     # Ensure database exists
-    ensure_database_exists()
+    ensure_database_exists(config)
     
     # Get connection
     if conn_string:
         conn = psycopg.connect(conn_string)
     else:
-        conn = get_postgres_connection()
+        conn = get_postgres_connection(config)
 
     try:
         for csv_path in csv_files:
@@ -744,7 +780,7 @@ def import_workout_from_directory(
     }
 
 
-def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Optional[str] = None):
+def calculate_and_import_calories(v02max_data_path: str | Path, config: dict, conn_string: Optional[str] = None):
     """
     Process VO2max data to calculate calorie burn per HR and import to PostgreSQL.
     
@@ -752,9 +788,19 @@ def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Opt
     ----------
     v02max_data_path : str or Path
         Path to the CSV file containing VO2max/Calorie data.
+    config : dict
+        Configuration dictionary from load_configuration()
     conn_string : str or None (optional)
-        PostgreSQL connection string. If None, loads from config.
+        PostgreSQL connection string. If None, uses get_postgres_connection(config).
+    
+    Raises
+    ------
+    ValueError
+        If config is None
     """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
     print(f"Reading VO2max data from {v02max_data_path}...")
     df = pd.read_csv(v02max_data_path)
     
@@ -809,13 +855,13 @@ def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Opt
 
     # Write the collapsed DataFrame to PostgreSQL
     # Ensure database exists
-    ensure_database_exists()
+    ensure_database_exists(config)
     
     # Get connection
     if conn_string:
         conn = psycopg.connect(conn_string)
     else:
-        conn = get_postgres_connection()
+        conn = get_postgres_connection(config)
     
     try:
         with conn.cursor() as cur:

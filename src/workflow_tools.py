@@ -26,15 +26,25 @@ from tokens import (
     refresh_access_token,
 )
 
-# Re-export user management
+# Re-export user management (API functions only)
 from users import (
-    ensure_userinfo_table,
-    get_userinfo_from_db,
-    save_userinfo_to_db,
-    get_default_physical_info,
     get_user_info,
     register_user,
     get_physical_info,
+)
+
+# Re-export database functions from DB-specific modules
+from duckdb_import import (
+    ensure_userinfo_table as ensure_userinfo_table_duckdb,
+    get_userinfo_from_db as get_userinfo_from_db_duckdb,
+    save_userinfo_to_db as save_userinfo_to_db_duckdb,
+    get_default_physical_info,
+)
+
+from postgresdb_import import (
+    ensure_userinfo_table as ensure_userinfo_table_postgres,
+    get_userinfo_from_db as get_userinfo_from_db_postgres,
+    save_userinfo_to_db as save_userinfo_to_db_postgres,
 )
 
 # Re-export OAuth flow
@@ -329,14 +339,21 @@ __all__ = [
     'refresh_access_token',
     'is_token_valid',
 
-    # User management
-    'ensure_userinfo_table',
-    'get_userinfo_from_db',
-    'save_userinfo_to_db',
-    'get_default_physical_info',
+    # User management (API functions)
     'get_user_info',
     'register_user',
     'get_physical_info',
+    
+    # Database functions (DuckDB)
+    'ensure_userinfo_table_duckdb',
+    'get_userinfo_from_db_duckdb',
+    'save_userinfo_to_db_duckdb',
+    'get_default_physical_info',
+    
+    # Database functions (PostgreSQL)
+    'ensure_userinfo_table_postgres',
+    'get_userinfo_from_db_postgres',
+    'save_userinfo_to_db_postgres',
 
     # Common tools
     'get_field',

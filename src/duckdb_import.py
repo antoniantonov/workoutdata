@@ -24,6 +24,125 @@ from config import load_configuration
 from import_tools import fix_missing_hr, expand_table_with_missing_bpm
 
 
+# =============================================================================
+# User Info Database Management (DuckDB)
+# =============================================================================
+
+def ensure_userinfo_table(db_path: Path) -> None:
+    """Ensure the userinfo table exists in the DuckDB database.
+    
+    Creates the userinfo table with schema for storing user profile information
+    from both get_user_info and get_physical_info API calls.
+    
+    Args:
+        db_path: Path to DuckDB database file
+    """
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute("""
+        CREATE TABLE IF NOT EXISTS userinfo (
+            polar_user_id INTEGER PRIMARY KEY,
+            first_name VARCHAR,
+            last_name VARCHAR,
+            birthdate VARCHAR,
+            gender VARCHAR,
+            weight FLOAT,
+            height FLOAT,
+            maximum_heart_rate INTEGER,
+            resting_heart_rate INTEGER,
+            aerobic_threshold INTEGER,
+            anaerobic_threshold INTEGER,
+            vo2_max FLOAT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        print("✅ Userinfo table ensured")
+    finally:
+        con.close()
+
+
+def get_userinfo_from_db(db_path: Path, polar_user_id: int) -> Optional[dict]:
+    """Retrieve user info from DuckDB database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+        polar_user_id: Polar user ID
+    
+    Returns:
+        Dictionary with user info, or None if not found
+    """
+    con = duckdb.connect(str(db_path))
+    try:
+        result = con.execute(
+            "SELECT * FROM userinfo WHERE polar_user_id = ?",
+            (polar_user_id,)
+        ).fetchone()
+        
+        if result:
+            columns = [desc[0] for desc in con.description]
+            return dict(zip(columns, result))
+        return None
+    except Exception as e:
+        print(f"⚠️  Error reading from userinfo table: {e}")
+        return None
+    finally:
+        con.close()
+
+
+def save_userinfo_to_db(db_path: Path, user_data: dict) -> None:
+    """Save or update user info in DuckDB database.
+    
+    Args:
+        db_path: Path to DuckDB database file
+        user_data: Dictionary with user information (must include polar_user_id)
+    """
+    if 'polar_user_id' not in user_data:
+        print("⚠️  Cannot save userinfo: polar_user_id missing")
+        return
+    
+    ensure_userinfo_table(db_path)
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        # Upsert: Delete old record if exists, then insert new
+        con.execute(
+            "DELETE FROM userinfo WHERE polar_user_id = ?",
+            (user_data['polar_user_id'],)
+        )
+        
+        # Build insert statement dynamically based on available fields
+        fields = list(user_data.keys())
+        placeholders = ', '.join(['?' for _ in fields])
+        field_names = ', '.join(fields)
+        
+        con.execute(
+            f"INSERT INTO userinfo ({field_names}, last_updated) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
+            tuple(user_data[f] for f in fields)
+        )
+        print(f"✅ Userinfo saved to database for user {user_data['polar_user_id']}")
+    except Exception as e:
+        print(f"⚠️  Error saving to userinfo table: {e}")
+    finally:
+        con.close()
+
+
+def get_default_physical_info() -> dict:
+    """Get hardcoded default physical info values.
+    
+    Returns:
+        Dictionary with default physical information
+    """
+    return {
+        'weight': 78.0,
+        'height': 175.0,
+        'maximum_heart_rate': 188,
+        'resting_heart_rate': 55,
+        'aerobic_threshold': 140,
+        'anaerobic_threshold': 165,
+        'vo2_max': 58.0
+    }
+
+
 def get_existing_workout_ids(config: dict) -> set:
     """Get set of existing workout IDs from DuckDB database.
     
@@ -529,6 +648,7 @@ def upload_database_to_azure(db_path: Optional[str | Path] = None) -> Optional[s
 
 
 __all__ = [
+    # Workout import functions
     'get_existing_workout_ids',
     'delete_workout_by_id',
     'import_workout_csv',
@@ -536,4 +656,10 @@ __all__ = [
     'import_to_duckdb',
     'calculate_and_import_calories',
     'upload_database_to_azure',
+    
+    # User info database functions
+    'ensure_userinfo_table',
+    'get_userinfo_from_db',
+    'save_userinfo_to_db',
+    'get_default_physical_info',
 ]

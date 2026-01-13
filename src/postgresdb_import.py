@@ -24,6 +24,122 @@ from config import load_configuration
 from import_tools import fix_missing_hr, expand_table_with_missing_bpm
 
 
+# =============================================================================
+# User Info Database Management (PostgreSQL)
+# =============================================================================
+
+def ensure_userinfo_table(conn) -> None:
+    """Ensure the userinfo table exists in the PostgreSQL database.
+    
+    Creates the userinfo table with schema for storing user profile information
+    from both get_user_info and get_physical_info API calls.
+    
+    Args:
+        conn: Active PostgreSQL connection (psycopg.Connection)
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS userinfo (
+            polar_user_id INTEGER PRIMARY KEY,
+            first_name VARCHAR(255),
+            last_name VARCHAR(255),
+            birthdate VARCHAR(50),
+            gender VARCHAR(50),
+            weight FLOAT,
+            height FLOAT,
+            maximum_heart_rate INTEGER,
+            resting_heart_rate INTEGER,
+            aerobic_threshold INTEGER,
+            anaerobic_threshold INTEGER,
+            vo2_max FLOAT,
+            last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        conn.commit()
+        print("✅ Userinfo table ensured")
+
+
+def get_userinfo_from_db(conn, polar_user_id: int) -> Optional[dict]:
+    """Retrieve user info from PostgreSQL database.
+    
+    Args:
+        conn: Active PostgreSQL connection (psycopg.Connection)
+        polar_user_id: Polar user ID
+    
+    Returns:
+        Dictionary with user info, or None if not found
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM userinfo WHERE polar_user_id = %s",
+                (polar_user_id,)
+            )
+            result = cur.fetchone()
+            
+            if result:
+                columns = [desc[0] for desc in cur.description]
+                return dict(zip(columns, result))
+            return None
+    except Exception as e:
+        print(f"⚠️  Error reading from userinfo table: {e}")
+        return None
+
+
+def save_userinfo_to_db(conn, user_data: dict) -> None:
+    """Save or update user info in PostgreSQL database.
+    
+    Args:
+        conn: Active PostgreSQL connection (psycopg.Connection)
+        user_data: Dictionary with user information (must include polar_user_id)
+    """
+    if 'polar_user_id' not in user_data:
+        print("⚠️  Cannot save userinfo: polar_user_id missing")
+        return
+    
+    ensure_userinfo_table(conn)
+    
+    try:
+        with conn.cursor() as cur:
+            # Upsert: Delete old record if exists, then insert new
+            cur.execute(
+                "DELETE FROM userinfo WHERE polar_user_id = %s",
+                (user_data['polar_user_id'],)
+            )
+            
+            # Build insert statement dynamically based on available fields
+            fields = list(user_data.keys())
+            placeholders = ', '.join(['%s' for _ in fields])
+            field_names = ', '.join([f'"{f}"' for f in fields])
+            
+            cur.execute(
+                f"INSERT INTO userinfo ({field_names}, last_updated) VALUES ({placeholders}, CURRENT_TIMESTAMP)",
+                tuple(user_data[f] for f in fields)
+            )
+            conn.commit()
+            print(f"✅ Userinfo saved to database for user {user_data['polar_user_id']}")
+    except Exception as e:
+        print(f"⚠️  Error saving to userinfo table: {e}")
+        conn.rollback()
+
+
+def get_default_physical_info() -> dict:
+    """Get hardcoded default physical info values.
+    
+    Returns:
+        Dictionary with default physical information
+    """
+    return {
+        'weight': 78.0,
+        'height': 175.0,
+        'maximum_heart_rate': 188,
+        'resting_heart_rate': 55,
+        'aerobic_threshold': 140,
+        'anaerobic_threshold': 165,
+        'vo2_max': 58.0
+    }
+
+
 def get_existing_workout_ids(config: dict) -> set:
     """Get set of existing workout IDs from PostgreSQL database.
     
@@ -736,6 +852,7 @@ def calculate_and_import_calories(v02max_data_path: str | Path, conn_string: Opt
 
 
 __all__ = [
+    # Workout import functions
     'get_existing_workout_ids',
     'get_postgres_connection',
     'ensure_database_exists',
@@ -745,4 +862,10 @@ __all__ = [
     'import_workout_csv',
     'import_workout_from_directory',
     'calculate_and_import_calories',
+    
+    # User info database functions
+    'ensure_userinfo_table',
+    'get_userinfo_from_db',
+    'save_userinfo_to_db',
+    'get_default_physical_info',
 ]

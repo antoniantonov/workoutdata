@@ -7,15 +7,15 @@ import sys
 from pathlib import Path
 import tempfile
 
-# Add src directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
+# Add repository root to path (parent of 'polar' package)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from unittest.mock import Mock, patch, MagicMock
 
 
 def test_duckdb_delegation():
-    """Test that DuckDB operations are delegated to duckdb_import module."""
-    from users import _get_db_module, _get_db_context
+    """Test that DuckDB operations are delegated to polar.storage.duckdb module."""
+    from polar.api.users import _get_db_module, _get_db_context
     
     config = {
         'DATABASE_TYPE': 'duckdb',
@@ -24,7 +24,7 @@ def test_duckdb_delegation():
     
     # Get module
     db_module = _get_db_module(config)
-    assert db_module.__name__ == 'duckdb_import'
+    assert db_module.__name__ == 'polar.storage.duckdb'
     
     # Get context (should be Path for DuckDB)
     db_context = _get_db_context(config)
@@ -32,8 +32,8 @@ def test_duckdb_delegation():
 
 
 def test_postgres_delegation():
-    """Test that PostgreSQL operations are delegated to postgresdb_import module."""
-    from users import _get_db_module
+    """Test that PostgreSQL operations are delegated to polar.storage.postgres module."""
+    from polar.api.users import _get_db_module
     
     config = {
         'DATABASE_TYPE': 'postgres',
@@ -42,17 +42,17 @@ def test_postgres_delegation():
     
     # Get module
     db_module = _get_db_module(config)
-    assert db_module.__name__ == 'postgresdb_import'
+    assert db_module.__name__ == 'polar.storage.postgres'
 
 
 def test_get_default_physical_info():
     """Test that default physical info is accessible from DB modules."""
-    import duckdb_import
-    import postgresdb_import
+    from polar.storage import duckdb
+    from polar.storage import postgres
     
     # Both modules should have the same defaults
-    duckdb_defaults = duckdb_import.get_default_physical_info()
-    postgres_defaults = postgresdb_import.get_default_physical_info()
+    duckdb_defaults = duckdb.get_default_physical_info()
+    postgres_defaults = postgres.get_default_physical_info()
     
     assert duckdb_defaults == postgres_defaults
     assert 'weight' in duckdb_defaults
@@ -61,28 +61,28 @@ def test_get_default_physical_info():
 
 
 def test_duckdb_userinfo_functions_exist():
-    """Test that userinfo functions exist in duckdb_import module."""
-    import duckdb_import
+    """Test that userinfo functions exist in polar.storage.duckdb module."""
+    from polar.storage import duckdb
     
-    assert hasattr(duckdb_import, 'ensure_userinfo_table')
-    assert hasattr(duckdb_import, 'get_userinfo_from_db')
-    assert hasattr(duckdb_import, 'save_userinfo_to_db')
-    assert hasattr(duckdb_import, 'get_default_physical_info')
+    assert hasattr(duckdb, 'ensure_userinfo_table')
+    assert hasattr(duckdb, 'get_userinfo_from_db')
+    assert hasattr(duckdb, 'save_userinfo_to_db')
+    assert hasattr(duckdb, 'get_default_physical_info')
 
 
 def test_postgres_userinfo_functions_exist():
-    """Test that userinfo functions exist in postgresdb_import module."""
-    import postgresdb_import
+    """Test that userinfo functions exist in polar.storage.postgres module."""
+    from polar.storage import postgres
     
-    assert hasattr(postgresdb_import, 'ensure_userinfo_table')
-    assert hasattr(postgresdb_import, 'get_userinfo_from_db')
-    assert hasattr(postgresdb_import, 'save_userinfo_to_db')
-    assert hasattr(postgresdb_import, 'get_default_physical_info')
+    assert hasattr(postgres, 'ensure_userinfo_table')
+    assert hasattr(postgres, 'get_userinfo_from_db')
+    assert hasattr(postgres, 'save_userinfo_to_db')
+    assert hasattr(postgres, 'get_default_physical_info')
 
 
 def test_users_module_exports():
     """Test that users.py only exports API-related functions."""
-    import users
+    from polar.api import users
     
     # Should export API functions
     assert hasattr(users, 'get_user_info')
@@ -96,25 +96,25 @@ def test_users_module_exports():
 
 
 def test_duckdb_module_exports():
-    """Test that duckdb_import exports userinfo functions."""
-    import duckdb_import
+    """Test that polar.storage.duckdb exports userinfo functions."""
+    from polar.storage import duckdb
     
     # Check __all__ includes userinfo functions
-    assert 'ensure_userinfo_table' in duckdb_import.__all__
-    assert 'get_userinfo_from_db' in duckdb_import.__all__
-    assert 'save_userinfo_to_db' in duckdb_import.__all__
-    assert 'get_default_physical_info' in duckdb_import.__all__
+    assert 'ensure_userinfo_table' in duckdb.__all__
+    assert 'get_userinfo_from_db' in duckdb.__all__
+    assert 'save_userinfo_to_db' in duckdb.__all__
+    assert 'get_default_physical_info' in duckdb.__all__
 
 
 def test_postgres_module_exports():
-    """Test that postgresdb_import exports userinfo functions."""
-    import postgresdb_import
+    """Test that polar.storage.postgres exports userinfo functions."""
+    from polar.storage import postgres
     
     # Check __all__ includes userinfo functions
-    assert 'ensure_userinfo_table' in postgresdb_import.__all__
-    assert 'get_userinfo_from_db' in postgresdb_import.__all__
-    assert 'save_userinfo_to_db' in postgresdb_import.__all__
-    assert 'get_default_physical_info' in postgresdb_import.__all__
+    assert 'ensure_userinfo_table' in postgres.__all__
+    assert 'get_userinfo_from_db' in postgres.__all__
+    assert 'save_userinfo_to_db' in postgres.__all__
+    assert 'get_default_physical_info' in postgres.__all__
 
 
 if __name__ == '__main__':

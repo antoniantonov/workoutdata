@@ -1,11 +1,41 @@
-# Quick Start Guide - Reorganized Code Structure
+# Quick Start Guide - Polar Package Structure
 
 ## What Changed?
 
-✅ **All Python modules moved to `src/`**
+✅ **Python modules reorganized into `polar/` package**
+✅ **Modules organized by functionality into subpackages**
 ✅ **Notebooks updated with new import paths**
 ✅ **New automated job created in `jobs/import/`**
-✅ **No logic changes - only imports updated**
+✅ **No logic changes - only imports and organization updated**
+
+## Package Structure
+
+The `polar/` package is organized by functionality:
+
+```
+polar/
+├── __init__.py          # Main package with re-exports
+├── workflow.py          # Main workflow orchestration
+├── api/                 # Polar AccessLink API interactions
+│   ├── users.py         # User registration and info
+│   ├── exercises.py     # Exercise listing and management
+│   ├── oauth.py         # OAuth authentication flow
+│   └── tokens.py        # Token management
+├── storage/             # Database operations
+│   ├── duckdb.py        # DuckDB operations
+│   └── postgres.py      # PostgreSQL operations
+├── converters/          # Data format conversion
+│   └── tcx.py           # TCX to CSV conversion
+├── ingest/              # Workout data ingestion
+│   └── workouts.py      # CSV import and processing
+├── cloud/               # Cloud storage integrations
+│   └── azure.py         # Azure Blob Storage
+└── utils/               # Shared utilities
+    ├── common.py        # Common helper functions
+    ├── config.py        # Configuration loading
+    ├── validations.py   # Validation checks
+    └── rendering.py     # Data visualization
+```
 
 ## Using Notebooks
 
@@ -15,13 +45,14 @@ All notebooks work the same way, just with updated imports at the top of cells:
 import sys
 from pathlib import Path
 
-# Add src to path
+# Add repository root to path
 repo_root = Path.cwd().parent if 'notebooks' in str(Path.cwd()) else Path.cwd()
-sys.path.insert(0, str(repo_root / 'src'))
+sys.path.insert(0, str(repo_root))
 
-# Now import as before
-import workflow_tools
-import import_tools
+# Now import from polar package
+from polar import workflow
+from polar.storage import duckdb, postgres
+from polar.ingest import workouts as import_tools
 ```
 
 ### Available Notebooks
@@ -70,7 +101,13 @@ This will:
 
 ```
 workoutdata/
-├── src/                    # ← All Python modules here
+├── polar/                  # ← All Python modules organized by functionality
+│   ├── api/                # ← Polar API interactions
+│   ├── storage/            # ← Database operations
+│   ├── converters/         # ← Data conversions
+│   ├── ingest/             # ← Workout ingestion
+│   ├── cloud/              # ← Cloud storage
+│   └── utils/              # ← Utilities
 ├── jobs/import/            # ← Automated job with uv
 │   ├── main.py
 │   ├── pyproject.toml
@@ -86,24 +123,24 @@ workoutdata/
 
 ### Notebooks: ModuleNotFoundError
 
-**Problem:** `ModuleNotFoundError: No module named 'workflow_tools'`
+**Problem:** `ModuleNotFoundError: No module named 'polar'`
 
 **Solution:** Make sure the first cell includes:
 ```python
 import sys
 from pathlib import Path
 repo_root = Path.cwd().parent if 'notebooks' in str(Path.cwd()) else Path.cwd()
-sys.path.insert(0, str(repo_root / 'src'))
+sys.path.insert(0, str(repo_root))
 ```
 
 ### Jobs: Import errors
 
-**Problem:** Can't import from src
+**Problem:** Can't import from polar
 
 **Solution:** Check that main.py has:
 ```python
 repo_root = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(repo_root / 'src'))
+sys.path.insert(0, str(repo_root))
 ```
 
 ### UV: Command not found
@@ -129,14 +166,15 @@ uv sync
 
 ## Testing
 
-### Test notebooks can import from src:
+### Test notebooks can import from polar:
 ```bash
 cd notebooks
 python3 -c "
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path.cwd().parent / 'src'))
-import workflow_tools
+sys.path.insert(0, str(Path.cwd().parent))
+from polar import workflow
+from polar.storage import duckdb
 print('✅ Imports working!')
 "
 ```
@@ -148,17 +186,17 @@ python3 -c "
 import sys
 from pathlib import Path
 repo_root = Path('.').resolve().parent.parent
-sys.path.insert(0, str(repo_root / 'src'))
-from workflow_tools import run_polar_workflow
+sys.path.insert(0, str(repo_root))
+from polar.workflow import run_polar_workflow
 print('✅ Ready to run!')
 "
 ```
 
 ## Summary
 
-- **Python files:** All in `src/`
+- **Python files:** All in `polar/` organized by functionality
 - **Notebooks:** Only `.ipynb` in `notebooks/`
 - **Automated job:** Use `uv run main.py` in `jobs/import/`
-- **No logic changes:** Only import paths updated
+- **No logic changes:** Only import paths and organization updated
 
 Everything should work exactly as before! 🎉

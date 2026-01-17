@@ -20,8 +20,8 @@ import pandas as pd  # type: ignore
 from IPython.display import display
 
 from azure_storage import is_azure_storage_enabled, upload_file_to_azure_storage
-from config import load_configuration
-from import_tools import fix_missing_hr, expand_table_with_missing_bpm
+from import_tools import fix_missing_hr
+from common_tools import process_vo2max_data_for_calories
 
 
 # =============================================================================
@@ -493,9 +493,11 @@ def import_workout_from_directory(
     }
 
 
-def import_to_duckdb(df: pd.DataFrame, table_name: str, db_file: str | Path = 'workout_data.db', replace: bool = False) -> Optional[duckdb.DuckDBPyConnection]:
+def _import_to_duckdb(df: pd.DataFrame, table_name: str, db_file: str | Path, replace: bool = False) -> Optional[duckdb.DuckDBPyConnection]:
     """
     Import a pandas DataFrame into a DuckDB table.
+    
+    Internal function used by calculate_and_import_calories.
     
     Parameters
     ----------
@@ -540,71 +542,35 @@ def import_to_duckdb(df: pd.DataFrame, table_name: str, db_file: str | Path = 'w
     return None
 
 
-def calculate_and_import_calories(duckdb_path: str | Path, v02max_data_path: str | Path):
+def calculate_and_import_calories(v02max_data_path: str | Path, config: dict):
     """
     Process VO2max data to calculate calorie burn per HR and import to DuckDB.
     
     Parameters
     ----------
-    duckdb_path : str or Path
-        Path to the DuckDB database.
     v02max_data_path : str or Path
         Path to the CSV file containing VO2max/Calorie data.
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Raises
+    ------
+    ValueError
+        If config is None or DUCKDB_PATH not found in config
     """
-    print(f"Reading VO2max data from {v02max_data_path}...")
-    df = pd.read_csv(v02max_data_path)
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
     
-    # Keep only HR and Calories columns
-    df = df[['HR', 'Calories']]
-    print(f"Total rows in original DataFrame: {len(df)}")
-
-    # Expand the table
-    expanded_df = expand_table_with_missing_bpm(df)
-    print(f"Total rows in expanded DataFrame: {len(expanded_df)}")
-
-    # Set display options to show all rows and columns without truncation
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
-    pd.set_option('display.float_format', '{:.6f}'.format)
-
-    # Find the index of the maximum HR value in expanded_df
-    max_hr_value = expanded_df['HR'].max()
-    max_hr_index = expanded_df[expanded_df['HR'] == max_hr_value].index[0]
-
-    print(f"Maximum HR value in expanded_df: {max_hr_value} at index {max_hr_index}")
-
-    # Create a subset of the expanded DataFrame from index 0 to the index of maximum HR
-    hr_rise_expanded_df = expanded_df.loc[:max_hr_index].copy()
-    print(f"Total rows in expanded sliced (0:{max_hr_index}) DataFrame : {len(hr_rise_expanded_df)}")
-
-    # Sorting it because we can have the following sequence of HR
-    # e.g., 150, 151, 152, 151, 150.
-    # Sorting it will put all the same HR values next to each other, so the collapsing algo
-    # below will be able to collapse them properly.
-    hr_rise_expanded_df = hr_rise_expanded_df.sort_values(by='HR').reset_index(drop=True)
-
-    # Display the subset of expanded DataFrame (data up to max HR)
-    print("\nExpanded data from HR rise (index 0 to max HR):")
-    display(hr_rise_expanded_df)
-
-    # Create a group identifier for consecutive identical HR values
-    hr_rise_expanded_df['group'] = (hr_rise_expanded_df['HR'] != hr_rise_expanded_df['HR'].shift()).cumsum()
-
-    # Group by both group and HR to collapse only consecutive duplicates
-    collapsed_df = hr_rise_expanded_df.groupby(['group', 'HR']).agg({
-        'Calories': 'mean',
-        'Calories_Second': 'mean'
-    }).reset_index().drop('group', axis=1)
+    # Get database path from config
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
     
-    print(f"Total rows in collapsed DataFrame: {len(collapsed_df)}")
-
-    # Display the collapsed DataFrame
-    print("\nFull collapsed DataFrame:")
-    display(collapsed_df)
-
+    # Use common processing logic
+    collapsed_df = process_vo2max_data_for_calories(v02max_data_path)
+    
     # Write the collapsed DataFrame to DuckDB
-    import_to_duckdb(collapsed_df, 'calories_per_hr', duckdb_path, replace=True)
+    _import_to_duckdb(collapsed_df, 'calories_per_hr', db_path, replace=True)
 
 
 def upload_database_to_azure(config: dict, db_path: Optional[str | Path] = None) -> Optional[str]:
@@ -677,7 +643,6 @@ __all__ = [
     'delete_workout_by_id',
     'import_workout_csv',
     'import_workout_from_directory',
-    'import_to_duckdb',
     'calculate_and_import_calories',
     'upload_database_to_azure',
     

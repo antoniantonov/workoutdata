@@ -20,8 +20,8 @@ import psycopg  # type: ignore
 from psycopg import sql # type: ignore
 from IPython.display import display
 
-from config import load_configuration
-from import_tools import fix_missing_hr, expand_table_with_missing_bpm
+from import_tools import fix_missing_hr
+from common_tools import process_vo2max_data_for_calories
 
 
 # =============================================================================
@@ -780,7 +780,7 @@ def import_workout_from_directory(
     }
 
 
-def calculate_and_import_calories(v02max_data_path: str | Path, config: dict, conn_string: Optional[str] = None):
+def calculate_and_import_calories(v02max_data_path: str | Path, config: dict):
     """
     Process VO2max data to calculate calorie burn per HR and import to PostgreSQL.
     
@@ -790,8 +790,6 @@ def calculate_and_import_calories(v02max_data_path: str | Path, config: dict, co
         Path to the CSV file containing VO2max/Calorie data.
     config : dict
         Configuration dictionary from load_configuration()
-    conn_string : str or None (optional)
-        PostgreSQL connection string. If None, uses get_postgres_connection(config).
     
     Raises
     ------
@@ -801,67 +799,15 @@ def calculate_and_import_calories(v02max_data_path: str | Path, config: dict, co
     if config is None:
         raise ValueError("config parameter is required and cannot be None")
     
-    print(f"Reading VO2max data from {v02max_data_path}...")
-    df = pd.read_csv(v02max_data_path)
+    # Use common processing logic
+    collapsed_df = process_vo2max_data_for_calories(v02max_data_path)
     
-    # Keep only HR and Calories columns
-    df = df[['HR', 'Calories']]
-    print(f"Total rows in original DataFrame: {len(df)}")
-
-    # Expand the table
-    expanded_df = expand_table_with_missing_bpm(df)
-    print(f"Total rows in expanded DataFrame: {len(expanded_df)}")
-
-    # Set display options to show all rows and columns without truncation
-    pd.set_option('display.max_rows', None)
-    pd.set_option('display.max_columns', None)
-    pd.set_option('display.width', None)
-    pd.set_option('display.float_format', '{:.6f}'.format)
-
-    # Find the index of the maximum HR value in expanded_df
-    max_hr_value = expanded_df['HR'].max()
-    max_hr_index = expanded_df[expanded_df['HR'] == max_hr_value].index[0]
-
-    print(f"Maximum HR value in expanded_df: {max_hr_value} at index {max_hr_index}")
-
-    # Create a subset of the expanded DataFrame from index 0 to the index of maximum HR
-    hr_rise_expanded_df = expanded_df.loc[:max_hr_index].copy()
-    print(f"Total rows in expanded sliced (0:{max_hr_index}) DataFrame : {len(hr_rise_expanded_df)}")
-
-    # Sorting it because we can have the following sequence of HR
-    # e.g., 150, 151, 152, 151, 150.
-    # Sorting it will put all the same HR values next to each other, so the collapsing algo
-    # below will be able to collapse them properly.
-    hr_rise_expanded_df = hr_rise_expanded_df.sort_values(by='HR').reset_index(drop=True)
-
-    # Display the subset of expanded DataFrame (data up to max HR)
-    print("\nExpanded data from HR rise (index 0 to max HR):")
-    display(hr_rise_expanded_df)
-
-    # Create a group identifier for consecutive identical HR values
-    hr_rise_expanded_df['group'] = (hr_rise_expanded_df['HR'] != hr_rise_expanded_df['HR'].shift()).cumsum()
-
-    # Group by both group and HR to collapse only consecutive duplicates
-    collapsed_df = hr_rise_expanded_df.groupby(['group', 'HR']).agg({
-        'Calories': 'mean',
-        'Calories_Second': 'mean'
-    }).reset_index().drop('group', axis=1)
-    
-    print(f"Total rows in collapsed DataFrame: {len(collapsed_df)}")
-
-    # Display the collapsed DataFrame
-    print("\nFull collapsed DataFrame:")
-    display(collapsed_df)
-
     # Write the collapsed DataFrame to PostgreSQL
     # Ensure database exists
     ensure_database_exists(config)
     
-    # Get connection
-    if conn_string:
-        conn = psycopg.connect(conn_string)
-    else:
-        conn = get_postgres_connection(config)
+    # Get connection from config
+    conn = get_postgres_connection(config)
     
     try:
         with conn.cursor() as cur:

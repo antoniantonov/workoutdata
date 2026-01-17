@@ -1,6 +1,6 @@
 """Azure Blob Storage utilities for workout data.
 
-This module provides functionality to upload workout CSV files to Azure Blob Storage
+This module provides functionality to upload files to Azure Blob Storage
 using DefaultAzureCredential for authentication, which supports:
 - Azure CLI credentials (when running locally after `az login`)
 - Managed Identity (when running in Azure)
@@ -90,16 +90,16 @@ def get_blob_service_client() -> BlobServiceClient:
 
 
 def upload_file_to_azure_storage(
-    csv_path: Path,
+    file_path: Path,
     blob_name: Optional[str] = None,
     container_name: Optional[str] = None,
     overwrite: bool = True
 ) -> Optional[str]:
-    """Upload a CSV file to Azure Blob Storage.
+    """Upload a file to Azure Blob Storage.
     
     Args:
-        csv_path: Path to the CSV file to upload
-        blob_name: Name for the blob in storage (default: filename from csv_path)
+        file_path: Path to the file to upload
+        blob_name: Name for the blob in storage (default: filename from file_path)
         container_name: Container name (default: from AZURE_STORAGE_CONTAINER_NAME)
         overwrite: Whether to overwrite existing blob (default: True)
     
@@ -107,7 +107,7 @@ def upload_file_to_azure_storage(
         URL of the uploaded blob, or None if upload is disabled/fails
     
     Raises:
-        FileNotFoundError: If the CSV file doesn't exist
+        FileNotFoundError: If the file doesn't exist
         ValueError: If Azure Storage is not properly configured
     """
     # Check if Azure Storage is enabled
@@ -115,8 +115,8 @@ def upload_file_to_azure_storage(
         print("⚠️ Azure Storage upload is disabled. Set AZURE_STORAGE_ENABLED=true to enable.")
         return None
     
-    if not csv_path.exists():
-        raise FileNotFoundError(f"CSV file not found: {csv_path}")
+    if not file_path.exists():
+        raise FileNotFoundError(f"File not found: {file_path}")
     
     config = get_azure_storage_config()
     
@@ -126,7 +126,7 @@ def upload_file_to_azure_storage(
     
     # Use provided blob name or default to filename
     if blob_name is None:
-        blob_name = csv_path.name
+        blob_name = file_path.name
     
     try:
         # Get blob service client
@@ -149,24 +149,26 @@ def upload_file_to_azure_storage(
         blob_client = container_client.get_blob_client(blob_name)
         
         # Determine content type based on file extension
-        file_extension = csv_path.suffix.lower()
+        file_extension = file_path.suffix.lower()
         if file_extension == '.tcx' or file_extension == '.xml':
             content_type = 'application/xml'
         elif file_extension == '.csv':
             content_type = 'text/csv'
+        elif file_extension == '.duckdb' or file_extension == '.db':
+            content_type = 'application/x-duckdb'
         else:
             content_type = 'application/octet-stream'  # Generic binary for unknown types
         
         # Set content settings based on file type
         content_settings = ContentSettings(
             content_type=content_type,
-            content_encoding='utf-8'
+            content_encoding='utf-8' if file_extension in ['.csv', '.tcx', '.xml'] else None
         )
         
         # Upload the file
-        print(f"📤 Uploading {csv_path.name} to Azure Blob Storage...")
+        print(f"📤 Uploading {file_path.name} to Azure Blob Storage...")
         
-        with open(csv_path, 'rb') as data:
+        with open(file_path, 'rb') as data:
             blob_client.upload_blob(
                 data,
                 overwrite=overwrite,
@@ -187,7 +189,7 @@ def list_azure_storage_blobs(
     container_name: Optional[str] = None,
     prefix: str = "workouts/"
 ) -> list:
-    """List workout CSV blobs in Azure Storage.
+    """List blobs in Azure Storage.
     
     Args:
         container_name: Container name (default: from config)

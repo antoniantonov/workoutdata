@@ -26,12 +26,8 @@ from tokens import (
     refresh_access_token,
 )
 
-# Re-export user management
+# Re-export user management (API functions only)
 from users import (
-    ensure_userinfo_table,
-    get_userinfo_from_db,
-    save_userinfo_to_db,
-    get_default_physical_info,
     get_user_info,
     register_user,
     get_physical_info,
@@ -51,7 +47,6 @@ from converters import convert_tcx_to_csv
 # Re-export exercise management
 from exercises import (
     generate_workout_id_from_start_time,
-    get_existing_workout_ids,
     normalize_start_time,
     list_exercises,
     display_exercises,
@@ -82,19 +77,21 @@ from typing import Dict
 
 
 def run_polar_workflow(
+    config: Dict,
     tokens_file: Path = Path("tokens_polar.json"),
     timeout: int = 300
 ) -> Dict[str, object]:
     """Execute complete Polar AccessLink workflow.
     
     This function orchestrates the entire workflow:
-    1. Load configuration from environment variables
+    1. Validate configuration
     2. Check token validity and run authorization if needed
     3. Register user (idempotent)
     4. List and download all new exercises (not already in database)
     5. Upload CSV files to Azure Storage (if enabled)
     
     Args:
+        config: Configuration dictionary from load_configuration()
         tokens_file: Path to token storage file (default: tokens_polar.json)
         timeout: Timeout for authorization flow in seconds (default: 300)
     
@@ -112,13 +109,15 @@ def run_polar_workflow(
         ValueError: If configuration is invalid
         Exception: If any step fails
     """
+    if config is None:
+        raise ValueError("config parameter is required")
+    
     print("="*80)
     print("POLAR ACCESSLINK COMPLETE WORKFLOW")
     print("="*80 + "\n")
     
-    # Step 1: Load configuration
-    print("Step 1: Loading configuration...")
-    config = load_configuration()
+    # Step 1: Use provided configuration
+    print("Step 1: Using provided configuration...")
     output_dir = config['OUTPUT_DIR']
     print()
     
@@ -180,8 +179,8 @@ def run_polar_workflow(
     print("Step 3: Registering user...")
     polar_user_id = register_user(
         access_token=access_token,
-        member_id=config['MEMBER_ID'],
-        api_base=config['API_BASE']
+        config=config,
+        member_id=config['MEMBER_ID']
     )
     print()
     
@@ -206,18 +205,15 @@ def run_polar_workflow(
         # Display all exercises
         display_exercises(exercises)
         
-        # Get db_path from config for user info caching and filtering
-        db_path = config.get('DUCKDB_PATH')
-        
         # Filter to only new exercises (not already in database)
-        new_exercises = filter_new_exercises(exercises, db_path)
+        new_exercises = filter_new_exercises(exercises, config)
         
         if new_exercises:
             print(f"\n✅ Found {len(new_exercises)} new exercise(s) to download")
             
             # Fetch user info ONCE before processing exercises
             print("\nFetching user info for CSV conversion parameters...")
-            user_info = get_user_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            user_info = get_user_info(polar_user_id, access_token, config=config)
             
             # Extract user name with default
             name = "Anton Antonov "  # Default
@@ -226,7 +222,7 @@ def run_polar_workflow(
                 print(f"✅ User name: {name.strip()}")
             
             # Get physical information using dedicated function
-            physical_info = get_physical_info(polar_user_id, access_token, config['API_BASE'], db_path=db_path)
+            physical_info = get_physical_info(polar_user_id, access_token, config=config)
             
             # Extract parameters from physical_info
             weight = physical_info.get('weight', 0.0)
@@ -265,23 +261,36 @@ def run_polar_workflow(
                     
                     # Upload to Azure Storage if enabled
                     if azure_enabled and start_time:
+                        # Generate workout ID for Azure blob name
+                        workout_id = generate_workout_id_from_start_time(start_time)
+                        
+                        # Upload CSV to polar_csv folder
                         try:
-                            # Generate workout ID for Azure blob name
-                            workout_id = generate_workout_id_from_start_time(start_time)
-                            
-                            # Upload CSV to polar_csv folder
                             csv_blob_name = f"polar_csv/{workout_id}.csv"
                             csv_blob_url = upload_file_to_azure_storage(csv_path, blob_name=csv_blob_name)
                             if csv_blob_url:
                                 azure_uploads.append(csv_blob_url)
-                            
-                            # Upload TCX to polar_tcx folder
+                        except Exception as e:
+                            print(f"⚠️ Azure CSV upload failed for workout {workout_id}: {e}")
+                            # Rename only the CSV file to indicate upload failure
+                            csv_path_obj = Path(csv_path)
+                            csv_failed_path = csv_path_obj.with_stem(csv_path_obj.stem + '_failed')
+                            csv_path_obj.rename(csv_failed_path)
+                            print(f"  Renamed CSV file to: {csv_failed_path.name}")
+                        
+                        # Upload TCX to polar_tcx folder
+                        try:
                             tcx_blob_name = f"polar_tcx/{workout_id}.tcx"
                             tcx_blob_url = upload_file_to_azure_storage(tcx_path, blob_name=tcx_blob_name)
                             if tcx_blob_url:
                                 azure_uploads.append(tcx_blob_url)
                         except Exception as e:
-                            print(f"⚠️ Azure upload failed for workout {workout_id}: {e}")
+                            print(f"⚠️ Azure TCX upload failed for workout {workout_id}: {e}")
+                            # Rename only the TCX file to indicate upload failure
+                            tcx_path_obj = Path(tcx_path)
+                            tcx_failed_path = tcx_path_obj.with_stem(tcx_path_obj.stem + '_failed')
+                            tcx_path_obj.rename(tcx_failed_path)
+                            print(f"  Renamed TCX file to: {tcx_failed_path.name}")
         else:
             print("\n⚠️ All exercises are already in the database. Nothing new to download.")
     else:
@@ -309,9 +318,6 @@ def run_polar_workflow(
 
 
 __all__ = [
-    # Configuration
-    'load_configuration',
-
     # Token management
     'save_tokens',
     'load_tokens',
@@ -320,30 +326,13 @@ __all__ = [
     'refresh_access_token',
     'is_token_valid',
 
-    # User management
-    'ensure_userinfo_table',
-    'get_userinfo_from_db',
-    'save_userinfo_to_db',
-    'get_default_physical_info',
+    # User management (API functions)
     'get_user_info',
     'register_user',
     'get_physical_info',
 
-    # Common tools
-    'get_field',
-
-    # OAuth flow
-    'create_callback_handler',
-    'start_callback_server',
-    'run_authorization_flow',
-    'complete_token_exchange',
-
-    # TCX conversion
-    'convert_tcx_to_csv',
-
     # Exercise management
     'generate_workout_id_from_start_time',
-    'get_existing_workout_ids',
     'normalize_start_time',
     'list_exercises',
     'display_exercises',

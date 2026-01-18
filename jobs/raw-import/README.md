@@ -51,10 +51,17 @@ Subsequent runs will use the stored tokens (auto-refresh if expired).
 
 ## Usage
 
-### Run with uv
+### Run Locally with uv
 
 ```bash
-# Run the import job
+# Navigate to the job directory
+cd jobs/raw-import
+
+# Copy and edit the example .env file
+cp .env.example .env
+# Edit .env with your credentials
+
+# Run the job
 uv run main.py
 ```
 
@@ -63,14 +70,47 @@ The `uv run` command will:
 - Install all dependencies from pyproject.toml
 - Execute main.py
 
-### Manual Python execution
+### Run with Docker
+
+Build and run using Docker Compose:
 
 ```bash
-# Install dependencies
-uv sync
+# Navigate to the job directory
+cd jobs/raw-import
 
-# Run with Python
-uv run python main.py
+# Copy and edit the example .env file
+cp .env.example .env
+# Edit .env with your credentials
+
+# Create empty tokens file (will be populated on first run)
+touch tokens_polar.json
+
+# Build and run with docker-compose
+docker-compose up --build
+```
+
+Or build and run manually:
+
+```bash
+# Build from repository root
+cd ../..
+docker build -f jobs/raw-import/Dockerfile -t polar-raw-import .
+
+# Run with volume mounts for config
+docker run \
+  -v $(pwd)/jobs/raw-import/.env:/app/jobs/raw-import/.env \
+  -v $(pwd)/jobs/raw-import/tokens_polar.json:/app/jobs/raw-import/tokens_polar.json \
+  -v $(pwd)/hr_data:/app/hr_data \
+  polar-raw-import
+```
+
+**Note:** For Azure authentication in Docker, you may need to mount Azure credentials:
+```bash
+# Mount Azure CLI credentials from host
+docker run \
+  -v ~/.azure:/root/.azure:ro \
+  ... other options ...
+  polar-raw-import
 ```
 
 ## Files

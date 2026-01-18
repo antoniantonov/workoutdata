@@ -55,8 +55,8 @@ def _get_db_context(config: Dict):
     db_type = config.get('DATABASE_TYPE', 'duckdb')
     
     if db_type == 'postgres':
-        import postgresdb_import
-        return postgresdb_import.get_postgres_connection(config)
+        from polar.storage import postgres
+        return postgres.get_postgres_connection(config)
     else:
         return config.get('DUCKDB_PATH')
 

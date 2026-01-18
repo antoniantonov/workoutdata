@@ -20,8 +20,8 @@ import psycopg  # type: ignore
 from psycopg import sql # type: ignore
 from IPython.display import display
 
-from import_tools import fix_missing_hr
-from common_tools import process_vo2max_data_for_calories
+from polar.ingest.workouts import fix_missing_hr
+from polar.utils.common import process_vo2max_data_for_calories
 
 
 # =============================================================================

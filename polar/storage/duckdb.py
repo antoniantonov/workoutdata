@@ -19,9 +19,9 @@ import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 from IPython.display import display
 
-from azure_storage import is_azure_storage_enabled, upload_file_to_azure_storage
-from import_tools import fix_missing_hr
-from common_tools import process_vo2max_data_for_calories
+from polar.cloud.azure import is_azure_storage_enabled, upload_file_to_azure_storage
+from polar.ingest.workouts import fix_missing_hr
+from polar.utils.common import process_vo2max_data_for_calories
 
 
 # =============================================================================

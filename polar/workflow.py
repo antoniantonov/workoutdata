@@ -2,23 +2,23 @@
 
 This module serves as the main entry point and re-exports all functionality
 from the refactored submodules:
-- tokens: Token management (save, load, exchange, refresh)
-- users: User management (registration, info, physical info, database)
-- oauth: OAuth callback server and authorization flow
-- tcx_converter: TCX to CSV conversion
-- exercises: Exercise listing and downloading
-- validation: Token and environment validation
-- azure_storage: Azure Blob Storage upload functionality
+- api.tokens: Token management (save, load, exchange, refresh)
+- api.users: User management (registration, info, physical info, database)
+- api.oauth: OAuth callback server and authorization flow
+- converters.tcx: TCX to CSV conversion
+- api.exercises: Exercise listing and downloading
+- utils.validations: Token and environment validation
+- cloud.azure: Azure Blob Storage upload functionality
 
 All functions maintain backward compatibility with the original module.
 """
 from __future__ import annotations
 
 # Re-export configuration
-from config import load_configuration
+from polar.utils.config import load_configuration
 
 # Re-export token management
-from tokens import (
+from polar.api.tokens import (
     save_tokens,
     load_tokens,
     encode_credentials,
@@ -27,14 +27,14 @@ from tokens import (
 )
 
 # Re-export user management (API functions only)
-from users import (
+from polar.api.users import (
     get_user_info,
     register_user,
     get_physical_info,
 )
 
 # Re-export OAuth flow
-from oauth import (
+from polar.api.oauth import (
     create_callback_handler,
     start_callback_server,
     run_authorization_flow,
@@ -42,10 +42,10 @@ from oauth import (
 )
 
 # Re-export TCX conversion
-from converters import convert_tcx_to_csv
+from polar.converters.tcx import convert_tcx_to_csv
 
 # Re-export exercise management
-from exercises import (
+from polar.api.exercises import (
     generate_workout_id_from_start_time,
     normalize_start_time,
     list_exercises,
@@ -55,16 +55,16 @@ from exercises import (
 )
 
 # Re-export common tools
-from common_tools import get_field
+from polar.utils.common import get_field
 
 # Re-export validation
-from validations import run_validation_checks
+from polar.utils.validations import run_validation_checks
 
 # Re-export token validation (now in tokens module)
-from tokens import is_token_valid
+from polar.api.tokens import is_token_valid
 
 # Re-export Azure Storage (optional)
-from azure_storage import (
+from polar.cloud.azure import (
     is_azure_storage_enabled,
     get_azure_storage_config,
     upload_file_to_azure_storage,

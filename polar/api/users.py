@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 
 import requests  # type: ignore
 
-from common_tools import get_field
+from polar.utils.common import get_field
 
 
 # =============================================================================
@@ -36,11 +36,11 @@ def _get_db_module(config: Dict):
     db_type = config.get('DATABASE_TYPE', 'duckdb')
     
     if db_type == 'postgres':
-        import postgresdb_import
-        return postgresdb_import
+        from polar.storage import postgres
+        return postgres
     else:
-        import duckdb_import
-        return duckdb_import
+        from polar.storage import duckdb
+        return duckdb
 
 
 def _get_db_context(config: Dict):
@@ -55,8 +55,8 @@ def _get_db_context(config: Dict):
     db_type = config.get('DATABASE_TYPE', 'duckdb')
     
     if db_type == 'postgres':
-        import postgresdb_import
-        return postgresdb_import.get_postgres_connection(config)
+        from polar.storage import postgres
+        return postgres.get_postgres_connection(config)
     else:
         return config.get('DUCKDB_PATH')
 

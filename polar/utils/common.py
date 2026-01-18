@@ -8,7 +8,7 @@ from typing import Dict, Optional
 from pathlib import Path
 import pandas as pd
 from IPython.display import display
-from import_tools import expand_table_with_missing_bpm
+from polar.ingest.workouts import expand_table_with_missing_bpm
 
 
 def get_field(data: Dict[str, object], *keys: str) -> Optional[object]:

@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 import pandas as pd  # type: ignore
 
-from config import load_configuration
+from polar.utils.config import load_configuration
 
 
 def fix_missing_hr(df):

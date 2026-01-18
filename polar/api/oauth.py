@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from tokens import (
+from polar.api.tokens import (
     save_tokens,
     exchange_code_for_token,
 )

@@ -14,10 +14,10 @@ from typing import Dict, List, Optional
 
 import requests  # type: ignore
 
-from common_tools import get_field
-from converters import convert_tcx_to_csv
-import duckdb_import
-import postgresdb_import
+from polar.utils.common import get_field
+from polar.converters.tcx import convert_tcx_to_csv
+from polar.storage import duckdb
+from polar.storage import postgres
 
 
 # =============================================================================
@@ -288,9 +288,9 @@ def filter_new_exercises(exercises: List[Dict[str, object]], config: dict) -> Li
     
     # Get existing workout IDs from the appropriate database
     if db_type == 'postgres':
-        existing_ids = postgresdb_import.get_existing_workout_ids(config)
+        existing_ids = postgres.get_existing_workout_ids(config)
     else:  # Default to DuckDB
-        existing_ids = duckdb_import.get_existing_workout_ids(config)
+        existing_ids = duckdb.get_existing_workout_ids(config)
     
     new_exercises = []
     for ex in exercises:

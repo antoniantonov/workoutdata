@@ -11,16 +11,16 @@ OAuth tokens are stored in tokens_polar.json.
 import sys
 from pathlib import Path
 
-# Add src to path
+# Add repository root to path
 # __file__ is jobs/import/main.py
 # parent = jobs/import
 # parent.parent = jobs
 # parent.parent.parent = repo root
 repo_root = Path(__file__).resolve().parent.parent.parent
-sys.path.insert(0, str(repo_root / 'src'))
+sys.path.insert(0, str(repo_root))
 
-from workflow_tools import run_polar_workflow, get_field
-import import_tools
+from polar.workflow import run_polar_workflow, get_field
+from polar.ingest import workouts as import_tools
 
 
 def main():

@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 from typing import List
 
-from tokens import is_token_valid, load_tokens
+from polar.api.tokens import is_token_valid, load_tokens
 
 
 def run_validation_checks(

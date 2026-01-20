@@ -57,12 +57,6 @@ from polar.api.exercises import (
 # Re-export common tools
 from polar.utils.common import get_field
 
-# Re-export validation
-from polar.utils.validations import run_validation_checks
-
-# Re-export token validation (now in tokens module)
-from polar.api.tokens import is_token_valid
-
 # Re-export Azure Storage (optional)
 from polar.cloud.azure import (
     is_azure_storage_enabled,
@@ -78,21 +72,19 @@ from typing import Dict
 
 def run_polar_workflow(
     config: Dict,
-    tokens_file: Path = Path("tokens_polar.json"),
     timeout: int = 300
 ) -> Dict[str, object]:
     """Execute complete Polar AccessLink workflow.
     
     This function orchestrates the entire workflow:
-    1. Validate configuration
-    2. Check token validity and run authorization if needed
-    3. Register user (idempotent)
-    4. List and download all new exercises (not already in database)
-    5. Upload CSV files to Azure Storage (if enabled)
+    1. Validate configuration (tokens loaded from config or run authorization)
+    2. Register user (idempotent)
+    3. List and download all new exercises (not already in database)
+    4. Upload CSV files to Azure Storage (if enabled)
     
     Args:
         config: Configuration dictionary from load_configuration()
-        tokens_file: Path to token storage file (default: tokens_polar.json)
+            Should include ACCESS_TOKEN and TOKEN_TYPE if already authorized
         timeout: Timeout for authorization flow in seconds (default: 300)
     
     Returns:
@@ -134,10 +126,9 @@ def run_polar_workflow(
     
     # Step 2: Check token validity and authorize if needed
     print("Step 2: Checking token validity...")
-    if is_token_valid(tokens_file):
-        print("✅ Valid token found")
-        tokens = load_tokens(tokens_file)
-        access_token = tokens['access_token']
+    access_token = config.get('ACCESS_TOKEN')
+    if access_token:
+        print("✅ Valid token found in configuration")
     else:
         print("⚠️  No valid token found. Starting authorization flow...")
         print()
@@ -158,20 +149,10 @@ def run_polar_workflow(
             client_id=config['CLIENT_ID'],
             client_secret=config['CLIENT_SECRET'],
             token_url=config['TOKEN_URL'],
-            tokens_file=tokens_file
+            tokens_file=config.get('TOKENS_FILE')
         )
         
         access_token = token_response.get('access_token')
-        
-        # Run validation checks
-        print("\nRunning validation checks after authorization...")
-        validation_passed = run_validation_checks(
-            tokens_file=tokens_file,
-            required_env_vars=['POLAR_CLIENT_ID', 'POLAR_CLIENT_SECRET']
-        )
-        
-        if not validation_passed:
-            raise Exception("Validation checks failed after authorization")
     
     print()
     
@@ -324,7 +305,6 @@ __all__ = [
     'encode_credentials',
     'exchange_code_for_token',
     'refresh_access_token',
-    'is_token_valid',
 
     # User management (API functions)
     'get_user_info',
@@ -338,9 +318,6 @@ __all__ = [
     'display_exercises',
     'download_tcx_and_convert_to_csv',
     'filter_new_exercises',
-
-    # Validation
-    'run_validation_checks',
 
     # Azure Storage
     'is_azure_storage_enabled',

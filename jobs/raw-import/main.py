@@ -26,8 +26,6 @@ repo_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(repo_root))
 
 from polar.utils.config import load_configuration
-from polar.api.tokens import is_token_valid, load_tokens
-from polar.api.oauth import run_authorization_flow, complete_token_exchange
 from polar.api.users import register_user, get_user_info, get_physical_info
 from polar.api.exercises import (
     list_exercises,
@@ -97,13 +95,16 @@ def main():
     print("=" * 80)
     print()
     
-    # OAuth token storage file (in same directory as this script)
-    tokens_file = Path(__file__).parent / "tokens_polar.json"
-    
-    # Step 1: Load configuration
+    # Step 1: Load configuration (includes token validation)
     print("Step 1: Loading configuration...")
-    config = load_configuration()
+    try:
+        config = load_configuration()
+    except (ValueError, FileNotFoundError) as e:
+        print(f"❌ ERROR: Configuration failed: {e}")
+        sys.exit(1)
+    
     output_dir = config['OUTPUT_DIR']
+    access_token = config['ACCESS_TOKEN']
     print()
     
     # Verify Azure Storage is enabled
@@ -113,41 +114,8 @@ def main():
         print("   Please set AZURE_STORAGE_ENABLED=true and configure storage account.")
         return
     
-    # Step 2: Check token validity and authorize if needed
-    print("Step 2: Checking OAuth token validity...")
-    if is_token_valid(tokens_file):
-        print("✅ Valid token found")
-        tokens = load_tokens(tokens_file)
-        access_token = tokens['access_token']
-    else:
-        print("⚠️  No valid token found. Starting authorization flow...")
-        print()
-        
-        # Run authorization flow
-        auth_code, redirect_uri = run_authorization_flow(
-            client_id=config['CLIENT_ID'],
-            redirect_port=config['REDIRECT_PORT'],
-            allow_port_fallback=config['ALLOW_PORT_FALLBACK'],
-            auth_url=config['AUTH_URL'],
-            timeout=300
-        )
-        
-        # Exchange code for tokens
-        token_response = complete_token_exchange(
-            auth_code=auth_code,
-            redirect_uri=redirect_uri,
-            client_id=config['CLIENT_ID'],
-            client_secret=config['CLIENT_SECRET'],
-            token_url=config['TOKEN_URL'],
-            tokens_file=tokens_file
-        )
-        
-        access_token = token_response.get('access_token')
-    
-    print()
-    
-    # Step 3: Register user
-    print("Step 3: Registering user with Polar API...")
+    # Step 2: Register user
+    print("Step 2: Registering user with Polar API...")
     polar_user_id = register_user(
         access_token=access_token,
         config=config,
@@ -155,8 +123,8 @@ def main():
     )
     print()
     
-    # Step 4: List exercises from Polar API
-    print("Step 4: Listing exercises from Polar API...")
+    # Step 3: List exercises from Polar API
+    print("Step 3: Listing exercises from Polar API...")
     exercises = list_exercises(
         access_token=access_token,
         api_base=config['API_BASE']
@@ -170,8 +138,8 @@ def main():
     # Display all exercises
     display_exercises(exercises)
     
-    # Step 5: Filter exercises - only download those NOT in Azure Storage
-    print("\nStep 5: Filtering exercises based on Azure Storage...")
+    # Step 4: Filter exercises - only download those NOT in Azure Storage
+    print("\nStep 4: Filtering exercises based on Azure Storage...")
     new_exercises = filter_exercises_not_in_azure(exercises)
     
     if not new_exercises:
@@ -179,8 +147,8 @@ def main():
         print("=" * 80)
         return
     
-    # Step 6: Fetch user info for CSV conversion
-    print("\nStep 6: Fetching user info for CSV conversion parameters...")
+    # Step 5: Fetch user info for CSV conversion
+    print("\nStep 5: Fetching user info for CSV conversion parameters...")
     user_info = get_user_info(polar_user_id, access_token, config=config)
     
     # Extract user name with default
@@ -199,8 +167,8 @@ def main():
     hr_sit = physical_info.get('resting-heart-rate', 0)
     vo2max = physical_info.get('vo2-max', 0)
     
-    # Step 7: Download TCX files and convert to CSV
-    print("\nStep 7: Downloading TCX files and converting to CSV...")
+    # Step 6: Download TCX files and convert to CSV
+    print("\nStep 6: Downloading TCX files and converting to CSV...")
     print("=" * 80)
     
     downloaded_count = 0

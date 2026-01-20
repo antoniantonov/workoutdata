@@ -131,6 +131,10 @@ def get_timeseries_data(workout_ids: list[str], config: dict) -> pd.DataFrame:
     if db_path is None:
         raise ValueError("DUCKDB_PATH not found in config")
     
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
+    
     con = duckdb.connect(str(db_path))
     try:
         # Build query with multiple workout IDs
@@ -172,6 +176,10 @@ def get_workout_metadata(workout_ids: list[str], config: dict) -> pd.DataFrame:
     db_path = config.get('DUCKDB_PATH')
     if db_path is None:
         raise ValueError("DUCKDB_PATH not found in config")
+    
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
     
     con = duckdb.connect(str(db_path))
     try:

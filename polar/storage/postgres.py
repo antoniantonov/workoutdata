@@ -141,6 +141,10 @@ def get_timeseries_data(workout_ids: list[str], config: dict) -> pd.DataFrame:
     if config is None:
         raise ValueError("config parameter is required and cannot be None")
     
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
+    
     conn = get_postgres_connection(config)
     try:
         with conn.cursor() as cur:
@@ -187,6 +191,10 @@ def get_workout_metadata(workout_ids: list[str], config: dict) -> pd.DataFrame:
     """
     if config is None:
         raise ValueError("config parameter is required and cannot be None")
+    
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
     
     conn = get_postgres_connection(config)
     try:

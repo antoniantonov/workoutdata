@@ -25,6 +25,202 @@ from polar.utils.common import process_vo2max_data_for_calories
 
 
 # =============================================================================
+# HR Zones Management (DuckDB)
+# =============================================================================
+
+def ensure_hr_zones_table(config: dict) -> None:
+    """Ensure the hr_zones table exists and is populated from zones CSV.
+    
+    Creates the hr_zones table and populates it with data from the zones CSV file
+    specified in the configuration.
+    
+    Args:
+        config: Configuration dictionary from load_configuration()
+    
+    Raises:
+        ValueError: If config is None or ZONES_CSV_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    zones_csv_path = config.get('ZONES_CSV_PATH')
+    if zones_csv_path is None:
+        raise ValueError("ZONES_CSV_PATH not found in config")
+    
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
+    
+    # Read zones CSV
+    zones_df = pd.read_csv(zones_csv_path)
+    zones_df = zones_df.sort_values('HR').reset_index(drop=True)
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        # Register the DataFrame and create/replace the table
+        con.register('zones_view', zones_df)
+        con.execute("DROP TABLE IF EXISTS hr_zones")
+        con.execute("""
+        CREATE TABLE hr_zones AS
+        SELECT * FROM zones_view
+        """)
+        
+        row_count = con.execute("SELECT COUNT(*) FROM hr_zones").fetchone()[0]
+        print(f"✅ HR zones table created with {row_count} zones")
+    finally:
+        con.close()
+
+
+def get_hr_zones(config: dict) -> pd.DataFrame:
+    """Get HR zones data from DuckDB database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with Zone and HR columns, sorted by HR
+    
+    Raises
+    ------
+    ValueError
+        If config is None or DUCKDB_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        zones_df = con.execute("SELECT * FROM hr_zones ORDER BY HR").fetchdf()
+        return zones_df
+    finally:
+        con.close()
+
+
+def get_timeseries_data(workout_ids: list[str], config: dict) -> pd.DataFrame:
+    """Get timeseries data for specified workout IDs from DuckDB database.
+    
+    Parameters
+    ----------
+    workout_ids : list[str]
+        List of workout IDs to retrieve
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with timeseries data for the specified workouts
+    
+    Raises
+    ------
+    ValueError
+        If config is None or DUCKDB_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        # Build query with multiple workout IDs
+        placeholders = ', '.join(['?' for _ in workout_ids])
+        query = f"""
+        SELECT * FROM timeseries 
+        WHERE workoutId IN ({placeholders})
+        ORDER BY workoutId, Time
+        """
+        df = con.execute(query, workout_ids).fetchdf()
+        return df
+    finally:
+        con.close()
+
+
+def get_workout_metadata(workout_ids: list[str], config: dict) -> pd.DataFrame:
+    """Get workout metadata for specified workout IDs from DuckDB database.
+    
+    Parameters
+    ----------
+    workout_ids : list[str]
+        List of workout IDs to retrieve
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with metadata for the specified workouts
+    
+    Raises
+    ------
+    ValueError
+        If config is None or DUCKDB_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        # Build query with multiple workout IDs
+        placeholders = ', '.join(['?' for _ in workout_ids])
+        query = f"""
+        SELECT * FROM workout_metadata 
+        WHERE workoutId IN ({placeholders})
+        """
+        df = con.execute(query, workout_ids).fetchdf()
+        return df
+    finally:
+        con.close()
+
+
+def get_calories_per_hr(config: dict) -> pd.DataFrame:
+    """Get calories per HR data from DuckDB database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with HR and calorie calculation data
+    
+    Raises
+    ------
+    ValueError
+        If config is None or DUCKDB_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    db_path = config.get('DUCKDB_PATH')
+    if db_path is None:
+        raise ValueError("DUCKDB_PATH not found in config")
+    
+    con = duckdb.connect(str(db_path))
+    try:
+        df = con.execute("SELECT * FROM calories_per_hr").fetchdf()
+        return df
+    finally:
+        con.close()
+
+
+# =============================================================================
 # User Info Database Management (DuckDB)
 # =============================================================================
 
@@ -638,6 +834,13 @@ def upload_database_to_azure(config: dict, db_path: Optional[str | Path] = None)
 
 
 __all__ = [
+    # HR Zones functions
+    'ensure_hr_zones_table',
+    'get_hr_zones',
+    'get_timeseries_data',
+    'get_workout_metadata',
+    'get_calories_per_hr',
+    
     # Workout import functions
     'get_existing_workout_ids',
     'delete_workout_by_id',

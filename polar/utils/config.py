@@ -89,8 +89,8 @@ def load_configuration() -> Dict[str, object]:
     # File Paths Configuration
     # =============================================================================
     
-    # Get base directory (parent of src directory)
-    base_dir = Path(__file__).parent.parent
+    # Get base directory (repo root, which is parent of polar directory)
+    base_dir = Path(__file__).parent.parent.parent
     
     # Token storage file
     tokens_file_env = os.getenv('POLAR_TOKENS_FILE')

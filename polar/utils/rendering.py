@@ -4,35 +4,46 @@ This module provides visualization functions for heart rate workout data includi
 - Line plots with HR zones overlay
 - Pie charts showing time distribution across HR zones
 - Support for comparing multiple workouts
+
+Functions accept configuration dictionary and automatically query the appropriate
+database (DuckDB or PostgreSQL) based on DATABASE_TYPE configuration.
 """
 from __future__ import annotations
 
-import duckdb
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from pathlib import Path
-from typing import List, Union
+from typing import List, Union, Dict
+
+# Import storage modules
+from polar.storage import duckdb as duckdb_storage
+from polar.storage import postgres as postgres_storage
 
 
 def plot_hr_with_zones(
     workoutIds: Union[str, List[str]],
-    db_path: str = "../hr_data/database_v2.duckdb"
+    config: Dict
 ) -> None:
     """
     Plots heart rate data with background zones for multiple workouts.
 
     Parameters:
     - workoutIds: str or list - The ID(s) of the workout(s) to plot.
-    - db_path: str - Path to the DuckDB database file.
+    - config: dict - Configuration dictionary from load_configuration().
     """
     
     # Convert single workoutId to list
     if isinstance(workoutIds, str):
         workoutIds = [workoutIds]
     
-    # Connect to DuckDB
-    con = duckdb.connect(db_path)
+    # Get database type from config
+    database_type = config.get('DATABASE_TYPE', 'duckdb').lower()
+    
+    # Select appropriate storage module
+    if database_type == 'postgres':
+        storage = postgres_storage
+    else:
+        storage = duckdb_storage
     
     # Define color palette for different workouts
     workout_colors = ['blue', 'red', 'green', 'orange', 'purple', 'brown', 'pink', 'gray', 'olive', 'cyan']
@@ -47,7 +58,8 @@ def plot_hr_with_zones(
     
     # Fetch and plot data for each workout
     for idx, workoutId in enumerate(workoutIds):
-        df = con.execute(f"SELECT * FROM timeseries WHERE starts_with(workoutId, '{workoutId}')").fetchdf()
+        # Get timeseries data for this workout
+        df = storage.get_timeseries_data([workoutId], config)
         
         if df.empty:
             print(f"No data found for workoutId: {workoutId}")
@@ -89,8 +101,6 @@ def plot_hr_with_zones(
             hoverinfo='skip'
         ))
     
-    con.close()
-    
     # If no data was found for any workout
     if global_min_hr == float('inf'):
         print("No data found for any workoutId")
@@ -100,8 +110,8 @@ def plot_hr_with_zones(
     first_time = min(all_first_times)
     last_time = max(all_last_times)
     
-    # Load and sort zones CSV
-    zones_df = pd.read_csv('../hr_data/zones.csv')
+    # Load zones from database
+    zones_df = storage.get_hr_zones(config)
     zones_df = zones_df.sort_values('HR').reset_index(drop=True)
     
     # Build background shapes for zones
@@ -183,31 +193,34 @@ def plot_hr_with_zones(
 
 def piechart_hr_with_zones(
     workoutId: str,
-    db_path: str = "../hr_data/database_v2.duckdb"
+    config: Dict
 ) -> None:
     """
     Plots a pie chart of time spent in each heart rate zone.
 
     Parameters:
     - workoutId: str - The ID of the workout to plot.
-    - db_path: str - Path to the DuckDB database file.
+    - config: dict - Configuration dictionary from load_configuration().
     """
     
-    def query_builder(workoutId, table_name):
-        return f"SELECT * FROM {table_name}" if workoutId == '' else f"SELECT * FROM {table_name} WHERE starts_with(workoutId, '{workoutId}')"
+    # Get database type from config
+    database_type = config.get('DATABASE_TYPE', 'duckdb').lower()
     
-    # Connect to DuckDB and fetch data
-    con = duckdb.connect(db_path)
-
-    hr_df = con.execute(query_builder(workoutId, 'timeseries')).fetchdf()
+    # Select appropriate storage module
+    if database_type == 'postgres':
+        storage = postgres_storage
+    else:
+        storage = duckdb_storage
+    
+    # Fetch data from database
+    hr_df = storage.get_timeseries_data([workoutId], config)
 
     if hr_df.empty:
         print(f"Cannot piechart. No data found for workoutId: {workoutId}")
         return
 
-    meta_df = con.execute(query_builder(workoutId, 'workout_metadata')).fetchdf()
-    calories_df = con.execute("SELECT * FROM calories_per_hr").fetchdf()
-    con.close()
+    meta_df = storage.get_workout_metadata([workoutId], config)
+    calories_df = storage.get_calories_per_hr(config)
 
     # 1.Get the minimum HR value
     min_hr = hr_df['HR (bpm)'].min()
@@ -216,7 +229,7 @@ def piechart_hr_with_zones(
     zone_bounds = []
     previous_hr = min_hr-5
 
-    zones_df = pd.read_csv('../hr_data/zones.csv')
+    zones_df = storage.get_hr_zones(config)
     zones_df = zones_df.sort_values('HR').reset_index(drop=True)
 
     # Generating the zone boundaries. E.g. Zone 2 = highest in Zone 1 + 1 to highest in Zone 2

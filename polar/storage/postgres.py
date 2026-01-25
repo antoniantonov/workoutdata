@@ -25,6 +25,239 @@ from polar.utils.common import process_vo2max_data_for_calories
 
 
 # =============================================================================
+# HR Zones Management (PostgreSQL)
+# =============================================================================
+
+def ensure_hr_zones_table(config: dict) -> None:
+    """Ensure the hr_zones table exists and is populated from zones CSV.
+    
+    Creates the hr_zones table and populates it with data from the zones CSV file
+    specified in the configuration.
+    
+    Args:
+        config: Configuration dictionary from load_configuration()
+    
+    Raises:
+        ValueError: If config is None or ZONES_CSV_PATH not found in config
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    zones_csv_path = config.get('ZONES_CSV_PATH')
+    if zones_csv_path is None:
+        raise ValueError("ZONES_CSV_PATH not found in config")
+    
+    # Read zones CSV
+    zones_df = pd.read_csv(zones_csv_path)
+    zones_df = zones_df.sort_values('HR').reset_index(drop=True)
+    
+    # Get connection from config
+    conn = get_postgres_connection(config)
+    
+    try:
+        with conn.cursor() as cur:
+            # Create table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS hr_zones (
+                    "Zone" INTEGER PRIMARY KEY,
+                    "HR" INTEGER
+                )
+            """)
+            
+            # Clear existing data
+            cur.execute("TRUNCATE TABLE hr_zones")
+            
+            # Insert new data
+            for _, row in zones_df.iterrows():
+                cur.execute(
+                    """
+                    INSERT INTO hr_zones ("Zone", "HR")
+                    VALUES (%s, %s)
+                    ON CONFLICT ("Zone") DO UPDATE SET
+                        "HR" = EXCLUDED."HR"
+                    """,
+                    (int(row['Zone']), int(row['HR']))
+                )
+            
+            conn.commit()
+            print(f"✅ HR zones table created with {len(zones_df)} zones")
+    finally:
+        conn.close()
+
+
+def get_hr_zones(config: dict) -> pd.DataFrame:
+    """Get HR zones data from PostgreSQL database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with Zone and HR columns, sorted by HR
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    conn = get_postgres_connection(config)
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT "Zone", "HR" FROM hr_zones ORDER BY "HR"')
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            zones_df = pd.DataFrame(rows, columns=columns)
+            return zones_df
+    finally:
+        conn.close()
+
+
+def get_timeseries_data(workout_ids: list[str], config: dict) -> pd.DataFrame:
+    """Get timeseries data for specified workout IDs from PostgreSQL database.
+    
+    Parameters
+    ----------
+    workout_ids : list[str]
+        List of workout IDs to retrieve
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with timeseries data for the specified workouts
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
+    
+    conn = get_postgres_connection(config)
+    try:
+        with conn.cursor() as cur:
+            # Build query with multiple workout IDs
+            placeholders = ', '.join(['%s' for _ in workout_ids])
+            query = f"""
+            SELECT * FROM timeseries 
+            WHERE "workoutId" IN ({placeholders})
+            ORDER BY "workoutId", "Time"
+            """
+            cur.execute(query, workout_ids)
+            rows = cur.fetchall()
+            
+            if rows:
+                columns = [desc[0] for desc in cur.description]
+                df = pd.DataFrame(rows, columns=columns)
+                return df
+            else:
+                # Return empty DataFrame with expected columns
+                return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_workout_metadata(workout_ids: list[str], config: dict) -> pd.DataFrame:
+    """Get workout metadata for specified workout IDs from PostgreSQL database.
+    
+    Parameters
+    ----------
+    workout_ids : list[str]
+        List of workout IDs to retrieve
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with metadata for the specified workouts
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    # Return empty DataFrame if no workout IDs provided
+    if not workout_ids:
+        return pd.DataFrame()
+    
+    conn = get_postgres_connection(config)
+    try:
+        with conn.cursor() as cur:
+            # Build query with multiple workout IDs
+            placeholders = ', '.join(['%s' for _ in workout_ids])
+            query = f"""
+            SELECT * FROM workout_metadata 
+            WHERE "workoutId" IN ({placeholders})
+            """
+            cur.execute(query, workout_ids)
+            rows = cur.fetchall()
+            
+            if rows:
+                columns = [desc[0] for desc in cur.description]
+                df = pd.DataFrame(rows, columns=columns)
+                return df
+            else:
+                # Return empty DataFrame
+                return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def get_calories_per_hr(config: dict) -> pd.DataFrame:
+    """Get calories per HR data from PostgreSQL database.
+    
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    
+    Returns
+    -------
+    pd.DataFrame
+        DataFrame with HR and calorie calculation data
+    
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+    
+    conn = get_postgres_connection(config)
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT * FROM calories_per_hr')
+            rows = cur.fetchall()
+            
+            if rows:
+                columns = [desc[0] for desc in cur.description]
+                df = pd.DataFrame(rows, columns=columns)
+                return df
+            else:
+                # Return empty DataFrame
+                return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+# =============================================================================
 # User Info Database Management (PostgreSQL)
 # =============================================================================
 
@@ -844,6 +1077,13 @@ def calculate_and_import_calories(v02max_data_path: str | Path, config: dict):
 
 
 __all__ = [
+    # HR Zones functions
+    'ensure_hr_zones_table',
+    'get_hr_zones',
+    'get_timeseries_data',
+    'get_workout_metadata',
+    'get_calories_per_hr',
+    
     # Workout import functions
     'get_existing_workout_ids',
     'get_postgres_connection',

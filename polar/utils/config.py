@@ -90,6 +90,7 @@ def load_configuration() -> Dict[str, object]:
             - TOKENS_FILE: Path to token storage file
             - DUCKDB_PATH: Path to DuckDB database file
             - VO2MAX_DATA_PATH: Path to VO2max data CSV file
+            - ZONES_CSV_PATH: Path to HR zones CSV file
             - OUTPUT_DIR: Directory for output files (TCX, CSV exports)
             
             PostgreSQL Database (optional):
@@ -177,6 +178,18 @@ def load_configuration() -> Dict[str, object]:
     # File Paths Configuration
     # =============================================================================
     
+    # Get base directory (repo root, which is parent of polar directory)
+    base_dir = Path(__file__).parent.parent.parent
+    
+    # Token storage file
+    tokens_file_env = os.getenv('POLAR_TOKENS_FILE')
+    if tokens_file_env:
+        TOKENS_FILE = Path(tokens_file_env)
+        if not TOKENS_FILE.is_absolute():
+            TOKENS_FILE = base_dir / TOKENS_FILE
+    else:
+        TOKENS_FILE = base_dir / "notebooks" / "tokens_polar.json"
+
     # DuckDB database path
     duckdb_path_env = os.getenv('DUCKDB_PATH')
     if duckdb_path_env:
@@ -194,6 +207,15 @@ def load_configuration() -> Dict[str, object]:
             VO2MAX_DATA_PATH = base_dir / VO2MAX_DATA_PATH
     else:
         VO2MAX_DATA_PATH = base_dir / "v02max_data.csv"
+
+    # HR zones data file
+    zones_csv_path_env = os.getenv('ZONES_CSV_PATH')
+    if zones_csv_path_env:
+        ZONES_CSV_PATH = Path(zones_csv_path_env)
+        if not ZONES_CSV_PATH.is_absolute():
+            ZONES_CSV_PATH = base_dir / ZONES_CSV_PATH
+    else:
+        ZONES_CSV_PATH = base_dir / "zones.csv"
 
     # Output directory for exercise files
     output_dir_env = os.getenv('OUTPUT_DIR')
@@ -275,6 +297,7 @@ def load_configuration() -> Dict[str, object]:
         print(f"  - DuckDB Path: {DUCKDB_PATH}")
     print(f"  - Tokens File: {TOKENS_FILE}")
     print(f"  - VO2max Data: {VO2MAX_DATA_PATH}")
+    print(f"  - Zones CSV: {ZONES_CSV_PATH}")
     print(f"  - Output Dir: {OUTPUT_DIR}")
     if DATABASE_TYPE == 'postgres':
         if POSTGRES_CONNECTION_STRING:
@@ -309,6 +332,7 @@ def load_configuration() -> Dict[str, object]:
         'TOKENS_FILE': TOKENS_FILE,
         'DUCKDB_PATH': DUCKDB_PATH,
         'VO2MAX_DATA_PATH': VO2MAX_DATA_PATH,
+        'ZONES_CSV_PATH': ZONES_CSV_PATH,
         'OUTPUT_DIR': OUTPUT_DIR,
 
         # PostgreSQL Database (optional)

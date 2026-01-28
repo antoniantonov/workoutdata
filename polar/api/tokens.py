@@ -50,7 +50,7 @@ def validate_tokens(tokens: Dict[str, Optional[str]]) -> Dict[str, Optional[str]
     # Validate TOKEN_TYPE (must be one of valid types)
     if not token_type:
         raise ValueError("TOKEN_TYPE is required and cannot be null or empty")
-    if token_type not in VALID_TOKEN_TYPES:
+    if token_type.lower() not in (t.lower() for t in VALID_TOKEN_TYPES):
         raise ValueError(
             f"TOKEN_TYPE '{token_type}' is not valid. "
             f"Must be one of: {', '.join(sorted(VALID_TOKEN_TYPES))}"

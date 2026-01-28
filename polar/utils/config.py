@@ -126,7 +126,7 @@ def load_configuration() -> Dict[str, object]:
     # =============================================================================
     # Token Loading (from file or environment)
     # =============================================================================
-    tokens_file_env = os.getenv('TOKENS_FILE')
+    tokens_file_env = os.getenv('POLAR_TOKENS_FILE')
     if tokens_file_env:
         TOKENS_FILE = Path(tokens_file_env)
         if not TOKENS_FILE.is_absolute():

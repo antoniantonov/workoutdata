@@ -34,7 +34,6 @@ from polar.api.tokens import (
     encode_credentials,
     exchange_code_for_token,
     refresh_access_token,
-    is_token_valid,
 )
 
 # Re-export user management
@@ -64,9 +63,6 @@ from polar.api.exercises import (
 # Re-export TCX conversion
 from polar.converters.tcx import convert_tcx_to_csv
 
-# Re-export validations
-from polar.utils.validations import run_validation_checks
-
 # Re-export Azure storage
 from polar.cloud.azure import (
     is_azure_storage_enabled,
@@ -87,7 +83,6 @@ __all__ = [
     "encode_credentials",
     "exchange_code_for_token",
     "refresh_access_token",
-    "is_token_valid",
     # User management
     "get_user_info",
     "register_user",
@@ -105,8 +100,6 @@ __all__ = [
     "filter_new_exercises",
     # Conversion
     "convert_tcx_to_csv",
-    # Validation
-    "run_validation_checks",
     # Azure storage
     "is_azure_storage_enabled",
     "upload_file_to_azure_storage",

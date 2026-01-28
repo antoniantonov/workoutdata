@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  raw-import:
+    build:
+      context: ../..
+      dockerfile: jobs/raw-import/Dockerfile
+    container_name: polar-raw-import
+    volumes:
+      # Mount .env file for configuration
+      - ./.env:/app/jobs/raw-import/.env:ro
+      # Mount tokens file for OAuth (create empty file first if doesn't exist)
+      - ./tokens_polar.json:/app/jobs/raw-import/tokens_polar.json
+      # Mount output directory (optional, for local file access)
+      - ../../hr_data:/app/hr_data
+    environment:
+      # These can override .env values if needed
+      - IN_CONTAINER=true
+    # For Azure authentication, you may need to mount Azure credentials
+    # Uncomment if using Azure CLI credentials from host
+    # volumes:
+    #   - ~/.azure:/root/.azure:ro

@@ -16,6 +16,49 @@ from typing import Dict, Optional
 import requests  # type: ignore
 
 
+# Valid OAuth 2.0 token types
+VALID_TOKEN_TYPES = {'Bearer', 'MAC', 'Basic'}
+
+
+def validate_tokens(tokens: Dict[str, Optional[str]]) -> Dict[str, Optional[str]]:
+    """Validate token dictionary structure and values.
+    
+    Args:
+        tokens: Dictionary containing ACCESS_TOKEN, REFRESH_TOKEN, TOKEN_TYPE
+    
+    Returns:
+        The validated tokens dictionary
+    
+    Raises:
+        ValueError: If tokens are invalid (missing, empty, or wrong format)
+    """
+    access_token = tokens.get('ACCESS_TOKEN')
+    refresh_token = tokens.get('REFRESH_TOKEN')
+    token_type = tokens.get('TOKEN_TYPE')
+    
+    # Validate ACCESS_TOKEN (required, must be > 10 characters)
+    if not access_token:
+        raise ValueError("ACCESS_TOKEN is required and cannot be null or empty")
+    if len(access_token) <= 10:
+        raise ValueError(f"ACCESS_TOKEN must be greater than 10 characters (got {len(access_token)})")
+    
+    # Validate REFRESH_TOKEN if specified (must be > 10 characters)
+    if refresh_token is not None and refresh_token != '':
+        if len(refresh_token) <= 10:
+            raise ValueError(f"REFRESH_TOKEN must be greater than 10 characters (got {len(refresh_token)})")
+    
+    # Validate TOKEN_TYPE (must be one of valid types)
+    if not token_type:
+        raise ValueError("TOKEN_TYPE is required and cannot be null or empty")
+    if token_type.lower() not in (t.lower() for t in VALID_TOKEN_TYPES):
+        raise ValueError(
+            f"TOKEN_TYPE '{token_type}' is not valid. "
+            f"Must be one of: {', '.join(sorted(VALID_TOKEN_TYPES))}"
+        )
+    
+    return tokens
+
+
 def save_tokens(
     access_token: str,
     refresh_token: Optional[str] = None,
@@ -40,19 +83,28 @@ def save_tokens(
     print(f"✅ Tokens saved to {tokens_file}")
 
 
-def load_tokens(tokens_file: Path = Path("tokens_polar.json")) -> Optional[Dict[str, str]]:
+def load_tokens(tokens_file: Path = Path("tokens_polar.json")) -> Dict[str, str]:
     """Load tokens from JSON file.
     
     Args:
         tokens_file: Path to token storage file (default: tokens_polar.json)
     
     Returns:
-        Dictionary containing tokens, or None if file doesn't exist
+        Dictionary containing tokens (access_token, refresh_token, token_type)
+    
+    Raises:
+        FileNotFoundError: If token file doesn't exist
+        ValueError: If token file contains invalid JSON
     """
     if not tokens_file.exists():
-        return None
-    with open(tokens_file, 'r') as f:
-        tokens = json.load(f)
+        raise FileNotFoundError(f"Token file not found: {tokens_file}")
+    
+    try:
+        with open(tokens_file, 'r') as f:
+            tokens = json.load(f)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid JSON in token file {tokens_file}: {e}")
+    
     return tokens
 
 
@@ -165,39 +217,11 @@ def refresh_access_token(
     return token_data
 
 
-def is_token_valid(tokens_file: Path = Path("tokens_polar.json")) -> bool:
-    """Check if a valid token exists in the token file.
-    
-    Args:
-        tokens_file: Path to token storage file
-    
-    Returns:
-        True if token file exists and contains valid access_token, False otherwise
-    """
-    if not tokens_file.exists():
-        return False
-    
-    try:
-        tokens = load_tokens(tokens_file)
-        if not tokens:
-            return False
-        
-        # Check if access_token exists and has reasonable length
-        access_token = tokens.get('access_token')
-        if not access_token or len(access_token) < 10:
-            return False
-        
-        # Token exists and looks valid
-        return True
-    except (json.JSONDecodeError, Exception):
-        return False
-
-
 __all__ = [
+    'validate_tokens',
     'save_tokens',
     'load_tokens',
     'encode_credentials',
     'exchange_code_for_token',
     'refresh_access_token',
-    'is_token_valid',
 ]

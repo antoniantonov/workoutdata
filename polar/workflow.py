@@ -298,6 +298,226 @@ def run_polar_workflow(
     }
 
 
+def run_polar_download_and_upload(
+    config: Dict,
+    timeout: int = 300
+) -> Dict[str, object]:
+    """Download all exercises from Polar and upload TCX + CSV to Azure.
+    
+    Lightweight workflow that skips all database operations:
+    1. Validate configuration (tokens loaded from config or run authorization)
+    2. Register user (idempotent)
+    3. Fetch user physical info (for CSV conversion parameters)
+    4. List ALL exercises from Polar API
+    5. Download each exercise as TCX, convert to CSV
+    6. Upload both TCX and CSV to Azure Storage
+    
+    No deduplication — downloads every exercise every time.
+    Azure Storage must be enabled; raises ValueError if not.
+    
+    Args:
+        config: Configuration dictionary from load_configuration()
+        timeout: Timeout for authorization flow in seconds (default: 300)
+    
+    Returns:
+        Dictionary containing:
+            - config: Configuration dictionary
+            - polar_user_id: Polar user ID
+            - access_token: OAuth access token
+            - exercises: List of all exercises
+            - downloaded_tcx_files: List of downloaded TCX file paths
+            - processed_csv_files: List of converted CSV file paths
+            - azure_uploads: List of Azure blob URLs
+    
+    Raises:
+        ValueError: If configuration is invalid or Azure Storage is not enabled
+    """
+    if config is None:
+        raise ValueError("config parameter is required")
+    
+    # Validate Azure Storage is enabled
+    if not is_azure_storage_enabled():
+        raise ValueError(
+            "Azure Storage must be enabled for this workflow. "
+            "Set AZURE_STORAGE_ENABLED=true and AZURE_STORAGE_ACCOUNT_NAME in your environment."
+        )
+    
+    azure_config = get_azure_storage_config()
+    
+    print("="*80)
+    print("POLAR DOWNLOAD → CSV → AZURE UPLOAD WORKFLOW")
+    print("="*80 + "\n")
+    
+    # Step 1: Configuration
+    print("Step 1: Using provided configuration...")
+    output_dir = config['OUTPUT_DIR']
+    print(f"☁️ Azure Storage: {azure_config['account_name']}/{azure_config['container_name']}")
+    print()
+    
+    # Step 2: Token check and authorization
+    print("Step 2: Checking token validity...")
+    access_token = config.get('ACCESS_TOKEN')
+    if access_token:
+        print("✅ Valid token found in configuration")
+    else:
+        print("⚠️  No valid token found. Starting authorization flow...")
+        print()
+        
+        auth_code, redirect_uri = run_authorization_flow(
+            client_id=config['CLIENT_ID'],
+            redirect_port=config['REDIRECT_PORT'],
+            allow_port_fallback=config['ALLOW_PORT_FALLBACK'],
+            auth_url=config['AUTH_URL'],
+            timeout=timeout
+        )
+        
+        token_response = complete_token_exchange(
+            auth_code=auth_code,
+            redirect_uri=redirect_uri,
+            client_id=config['CLIENT_ID'],
+            client_secret=config['CLIENT_SECRET'],
+            token_url=config['TOKEN_URL'],
+            tokens_file=config.get('TOKENS_FILE')
+        )
+        
+        access_token = token_response.get('access_token')
+    print()
+    
+    # Step 3: Register user
+    print("Step 3: Registering user...")
+    polar_user_id = register_user(
+        access_token=access_token,
+        config=config,
+        member_id=config['MEMBER_ID']
+    )
+    print()
+    
+    if not polar_user_id:
+        raise ValueError("Polar user ID unavailable. Cannot proceed.")
+    
+    # Step 4: Fetch user info for CSV conversion parameters
+    print("Step 4: Fetching user info for CSV conversion...")
+    user_info = get_user_info(polar_user_id, access_token, config=config)
+    
+    name = "Anton Antonov "
+    if user_info and 'first-name' in user_info and 'last-name' in user_info:
+        name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
+        print(f"✅ User name: {name.strip()}")
+    
+    physical_info = get_physical_info(polar_user_id, access_token, config=config)
+    
+    weight = physical_info.get('weight', 0.0)
+    height = physical_info.get('height', 0.0)
+    hr_max = physical_info.get('maximum-heart-rate', 0)
+    hr_sit = physical_info.get('resting-heart-rate', 0)
+    vo2max = physical_info.get('vo2-max', 0)
+    print()
+    
+    # Step 5: List and download ALL exercises
+    print("Step 5: Listing and downloading ALL exercises...")
+    exercises = list_exercises(
+        access_token=access_token,
+        api_base=config['API_BASE']
+    )
+    
+    downloaded_tcx_files = []
+    processed_csv_files = []
+    azure_uploads = []
+    
+    if exercises:
+        display_exercises(exercises)
+        print(f"\n📥 Downloading all {len(exercises)} exercise(s)...")
+        
+        for i, exercise in enumerate(exercises, 1):
+            exercise_id = get_field(exercise, 'id', 'exercise_id')
+            start_time = get_field(exercise, 'start_time', 'start-time', 'local_start_time')
+            
+            print(f"\n--- Processing exercise {i}/{len(exercises)} ---")
+            print(f"Exercise ID: {exercise_id}")
+            print(f"Start Time: {start_time}")
+            
+            result = download_tcx_and_convert_to_csv(
+                exercise_id=exercise_id,
+                access_token=access_token,
+                output_dir=output_dir,
+                name=name,
+                height=height,
+                weight=weight,
+                hr_max=hr_max,
+                hr_sit=hr_sit,
+                vo2max=vo2max,
+                api_base=config['API_BASE'],
+                start_time=start_time
+            )
+            
+            if result is not None:
+                csv_path, tcx_path = result
+                downloaded_tcx_files.append(tcx_path)
+                processed_csv_files.append(csv_path)
+                
+                if start_time:
+                    workout_id = generate_workout_id_from_start_time(start_time)
+                    csv_uploaded = False
+                    tcx_uploaded = False
+                    
+                    # Upload CSV (overwrite existing blobs)
+                    try:
+                        csv_blob_name = f"polar_csv/{workout_id}.csv"
+                        csv_blob_url = upload_file_to_azure_storage(csv_path, blob_name=csv_blob_name, overwrite=True)
+                        if csv_blob_url:
+                            azure_uploads.append(csv_blob_url)
+                            csv_uploaded = True
+                    except Exception as e:
+                        print(f"⚠️ Azure CSV upload failed for workout {workout_id}: {e}")
+                        csv_path_obj = Path(csv_path)
+                        csv_failed_path = csv_path_obj.with_stem(csv_path_obj.stem + '_failed')
+                        csv_path_obj.rename(csv_failed_path)
+                        print(f"  Renamed CSV file to: {csv_failed_path.name}")
+                    
+                    # Upload TCX (overwrite existing blobs)
+                    try:
+                        tcx_blob_name = f"polar_tcx/{workout_id}.tcx"
+                        tcx_blob_url = upload_file_to_azure_storage(tcx_path, blob_name=tcx_blob_name, overwrite=True)
+                        if tcx_blob_url:
+                            azure_uploads.append(tcx_blob_url)
+                            tcx_uploaded = True
+                    except Exception as e:
+                        print(f"⚠️ Azure TCX upload failed for workout {workout_id}: {e}")
+                        tcx_path_obj = Path(tcx_path)
+                        tcx_failed_path = tcx_path_obj.with_stem(tcx_path_obj.stem + '_failed')
+                        tcx_path_obj.rename(tcx_failed_path)
+                        print(f"  Renamed TCX file to: {tcx_failed_path.name}")
+                    
+                    # Delete local files after successful upload
+                    if csv_uploaded:
+                        Path(csv_path).unlink()
+                        print(f"🗑️ Deleted local CSV: {Path(csv_path).name}")
+                    if tcx_uploaded:
+                        Path(tcx_path).unlink()
+                        print(f"🗑️ Deleted local TCX: {Path(tcx_path).name}")
+    else:
+        print("⚠️ No exercises available to download.")
+    
+    print()
+    print("="*80)
+    print("✅ WORKFLOW COMPLETE")
+    if downloaded_tcx_files:
+        print(f"  Downloaded and processed {len(downloaded_tcx_files)} exercise(s)")
+    if azure_uploads:
+        print(f"  Uploaded {len(azure_uploads)} file(s) (TCX + CSV) to Azure Storage")
+    print("="*80)
+    
+    return {
+        'config': config,
+        'polar_user_id': polar_user_id,
+        'access_token': access_token,
+        'exercises': exercises,
+        'downloaded_tcx_files': downloaded_tcx_files,
+        'processed_csv_files': processed_csv_files,
+        'azure_uploads': azure_uploads,
+    }
+
+
 __all__ = [
     # Token management
     'save_tokens',
@@ -327,4 +547,7 @@ __all__ = [
 
     # Complete workflow
     'run_polar_workflow',
+
+    # Download + Azure upload workflow
+    'run_polar_download_and_upload',
 ]

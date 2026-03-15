@@ -72,6 +72,7 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
   - `hr-plotting-v0.1.ipynb` – **DEPRECATED**: Do not use or modify. Kept only for educational purposes for human developers.
   - `calories_calculator.ipynb` – calorie-related analysis.
   - `polar_accesslink_workflow.ipynb` – Polar AccessLink API integration.
+  - `polar_download_upload_azure.ipynb` – Download all Polar exercises, convert TCX→CSV, upload both to Azure (no database operations).
 - **Polar AccessLink Modules** (in `polar/` subdirectories):
   - `utils/config.py` – Configuration loading from environment variables (DATABASE_TYPE, paths, API credentials).
   - `api/` – API client modules for Polar AccessLink

@@ -185,3 +185,7 @@ cython_debug/
 # PostgreSQL data directory
 /data/pg/*
 !data/pg/.gitkeep
+
+# GarminDB SQLite databases and downloaded data
+/data/sqlite/*.db
+/data/sqlite/*

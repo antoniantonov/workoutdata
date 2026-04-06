@@ -1,0 +1,9 @@
+# Jupytext configuration
+# Notebooks in the notebooks/ directory are stored as MyST Markdown (.md)
+# and can be opened as Jupyter notebooks with the Jupytext VS Code extension.
+#
+# To regenerate .ipynb from .md:  jupytext --to notebook notebooks/<file>.md
+# To update .md from .ipynb:      jupytext --to myst notebooks/<file>.ipynb
+
+[formats]
+"notebooks/" = "md:myst"

@@ -57,10 +57,10 @@ from polar.ingest import workouts as import_tools
 
 ### Available Notebooks
 
-- **`polar_accesslink_workflow_v0.2.ipynb`** - Download workouts from Polar API
-- **`populate_duckdb.ipynb`** - Import CSV files to database
-- **`hr_plotting_v0.2.ipynb`** - Visualize workout data
-- **`calories_calculator.ipynb`** - Calculate calorie burn rates
+- **`polar_accesslink_workflow_v0.2.md`** - Download workouts from Polar API
+- **`populate_duckdb.md`** - Import CSV files to database
+- **`hr_plotting_v0.2.md`** - Visualize workout data
+- **`calories_calculator_hr_zones.md`** - Calculate calorie burn rates
 
 ## Using the Automated Job
 
@@ -112,8 +112,8 @@ workoutdata/
 │   ├── main.py
 │   ├── pyproject.toml
 │   └── .env
-├── notebooks/              # ← Only .ipynb files
-│   ├── *.ipynb
+├── notebooks/              # ← MyST Markdown notebooks (via Jupytext)
+│   ├── *.md
 │   └── .env
 └── hr_data/                # ← Database and CSV files
     └── database_v2.duckdb
@@ -195,7 +195,7 @@ print('✅ Ready to run!')
 ## Summary
 
 - **Python files:** All in `polar/` organized by functionality
-- **Notebooks:** Only `.ipynb` in `notebooks/`
+- **Notebooks:** MyST Markdown `.md` files in `notebooks/` (open as notebooks via Jupytext)
 - **Automated job:** Use `uv run main.py` in `jobs/import/`
 - **No logic changes:** Only import paths and organization updated
 

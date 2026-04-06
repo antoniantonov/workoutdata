@@ -97,7 +97,7 @@ You are a specialized frontend development agent for the workoutdata repository.
 - **HR Zones**: Defined ranges with associated colors
 
 ### Key Visualization Requirements
-Based on existing Jupyter notebooks (`hr-plotting-v0.2.ipynb`):
+Based on existing Jupyter notebooks (`hr_plotting_v0.2.md`):
 - Plot HR vs. Time with colored zone backgrounds
 - Support multiple workout overlays
 - Interactive hover tooltips showing exact values

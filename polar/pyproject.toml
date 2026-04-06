@@ -51,6 +51,7 @@ azure = [
 ]
 notebook = [
     "ipython>=8.0.0",
+    "jupytext>=1.16.0",
 ]
 all = [
     "polar-workout-data[azure,notebook]",

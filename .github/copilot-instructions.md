@@ -22,7 +22,7 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
 - **Duplicate guard**: Skip import if `workout_metadata.workoutId` already exists.
 - **Idempotent cleanup**: On failure, exception handler deletes any inserted rows for that `workoutId` from both tables.
 - **Success/status messages**: "✅ Imported." (green check), "❌ Error", and summary statistics for batch imports.
-- **Usage notebook**: `populate_duckdb.ipynb` demonstrates usage of storage module functions.
+- **Usage notebook**: `populate_duckdb.md` demonstrates usage of storage module functions.
 
 ## 3. HR Cleaning Logic (`fix_missing_hr`)
 - Trims leading/trailing rows with null HR.
@@ -66,13 +66,13 @@ Concise operational context for AI assistants modifying this repo. Focus on hear
 - **Rendering** (in `polar/utils/`):
   - `rendering.py` – Visualization functions using config-based database queries
   - Functions: `plot_hr_with_zones(workoutIds, config)`, `piechart_hr_with_zones(workoutId, config)`
-- **Notebooks**:
-  - `populate_duckdb.ipynb` – demonstrates importing workouts using storage modules.
-  - `hr-plotting-v0.2.ipynb` – demonstrates visualization with rendering functions.
-  - `hr-plotting-v0.1.ipynb` – **DEPRECATED**: Do not use or modify. Kept only for educational purposes for human developers.
-  - `calories_calculator.ipynb` – calorie-related analysis.
-  - `polar_accesslink_workflow.ipynb` – Polar AccessLink API integration.
-  - `polar_download_upload_azure.ipynb` – Download all Polar exercises, convert TCX→CSV, upload both to Azure (no database operations).
+- **Notebooks** (stored as MyST Markdown via Jupytext — open as notebooks in VS Code with the Jupytext extension):
+  - `populate_duckdb.md` – demonstrates importing workouts using storage modules.
+  - `hr_plotting_v0.2.md` – demonstrates visualization with rendering functions.
+  - `calories_calculator_hr_zones.md` – calorie-related analysis and HR zone import.
+  - `polar_accesslink_workflow_v0.2.md` – Polar AccessLink API integration.
+  - `polar_download_upload_azure.md` – Download all Polar exercises, convert TCX→CSV, upload both to Azure (no database operations).
+  - `upload_existing_workouts_to_azure.md` – Batch upload existing workout CSVs/TCXs to Azure Blob Storage.
 - **Polar AccessLink Modules** (in `polar/` subdirectories):
   - `utils/config.py` – Configuration loading from environment variables (DATABASE_TYPE, paths, API credentials).
   - `api/` – API client modules for Polar AccessLink

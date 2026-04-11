@@ -1,43 +1,40 @@
-# Dockerfile for Raw Import Job
-# Downloads TCX files from Polar API, converts to CSV, and uploads to Azure Storage
+# Dockerfile for Polar Import Job (Full Workflow)
+# Downloads TCX from Polar API, converts to CSV, uploads to Azure,
+# imports into database (DuckDB or PostgreSQL), and cleans up.
 
 FROM python:3.11-slim
 
-# Install system dependencies and uv
+# Install system dependencies, Azure CLI, and uv
 RUN apt-get update && apt-get install -y \
     curl \
+    ca-certificates \
+    apt-transport-https \
+    lsb-release \
+    gnupg \
+    && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
     && rm -rf /var/lib/apt/lists/* \
     && curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # Add uv to PATH
-ENV PATH="/root/.cargo/bin:${PATH}"
+ENV PATH="/root/.local/bin:/root/.cargo/bin:${PATH}"
 
-# Set working directory
+# Set working directory to repository root
 WORKDIR /app
 
-# Copy the entire repository structure (needed for imports to work)
-# This includes the polar module which is required
+# Copy the entire repository structure (needed for polar module imports)
 COPY . /app
 
-# Change to the raw-import job directory
-WORKDIR /app/jobs/raw-import
-
-# Install dependencies using uv
-# uv sync will create a virtual environment and install dependencies
+# Install dependencies from the import job's pyproject.toml
+WORKDIR /app/jobs/import
 RUN uv sync --no-dev
 
-# The .env file and tokens_polar.json should be provided via volume mounts
-# Example: docker run -v $(pwd)/.env:/app/jobs/raw-import/.env \
-#                     -v $(pwd)/tokens_polar.json:/app/jobs/raw-import/tokens_polar.json \
-#                     raw-import-job
-
-# For production, you can also copy them during build (not recommended for secrets):
-# COPY .env .env
-# COPY tokens_polar.json tokens_polar.json
+# Switch back to repo root as working directory.
+# config.py resolves paths relative to both cwd and __file__,
+# so running from repo root ensures consistent path resolution.
+WORKDIR /app
 
 # Set environment variable to indicate we're in a container
 ENV IN_CONTAINER=true
 
-# Run the raw import job using uv
-CMD ["uv", "run", "main.py"]
-
+# Run the import job using uv (with pyproject.toml from jobs/import)
+CMD ["uv", "run", "--project", "/app/jobs/import", "python", "/app/jobs/import/main.py"]

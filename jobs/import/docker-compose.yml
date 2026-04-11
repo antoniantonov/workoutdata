@@ -1,22 +1,18 @@
-version: '3.8'
-
 services:
-  raw-import:
+  import:
     build:
       context: ../..
-      dockerfile: jobs/raw-import/Dockerfile
-    container_name: polar-raw-import
+      dockerfile: jobs/import/Dockerfile
+    container_name: polar-import-job
+    env_file:
+      - .env
     volumes:
-      # Mount .env file for configuration
-      - ./.env:/app/jobs/raw-import/.env:ro
-      # Mount tokens file for OAuth (create empty file first if doesn't exist)
-      - ./tokens_polar.json:/app/jobs/raw-import/tokens_polar.json
-      # Mount output directory (optional, for local file access)
-      - ../../hr_data:/app/hr_data
+      # Mount tokens file for OAuth (resolved from repo root: jobs/import/tokens_polar.json)
+      - ./tokens_polar.json:/app/jobs/import/tokens_polar.json
+      # Mount local_data for DuckDB database and intermediate files (TCX/CSV)
+      - ./local_data:/app/local_data
+      # Mount Azure CLI credentials for Azure Storage authentication
+      # Read-write because az CLI writes session files
+      - ~/.azure:/root/.azure
     environment:
-      # These can override .env values if needed
       - IN_CONTAINER=true
-    # For Azure authentication, you may need to mount Azure credentials
-    # Uncomment if using Azure CLI credentials from host
-    # volumes:
-    #   - ~/.azure:/root/.azure:ro

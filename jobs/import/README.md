@@ -1,169 +1,137 @@
-# Raw Import Job
+# Polar Import Job (Full Workflow)
 
-Automated job for downloading TCX workout files from Polar AccessLink API and converting them to CSV format.
+Automated Docker job that replicates the complete `polar_accesslink_workflow_v0.2` notebook:
 
-## Overview
-
-This job executes the raw import workflow:
-1. Lists exercises from Polar API via OAuth
-2. Checks Azure Blob Storage for existing workouts (by workoutId)
-3. Downloads only NEW TCX files not already in Azure Storage
-4. Converts TCX files to Polar-compatible CSV format
-5. Uploads both TCX and CSV files to Azure Blob Storage
+1. **OAuth & User Registration** — Validates tokens, registers with Polar API
+2. **Exercise Discovery** — Lists all exercises, filters new ones by database
+3. **Download & Convert** — Downloads TCX files, converts to Polar-compatible CSV
+4. **Azure Upload** — Uploads TCX + CSV files to Azure Blob Storage
+5. **Database Import** — Imports CSVs into DuckDB or PostgreSQL
+6. **DuckDB Upload** — Uploads DuckDB database to Azure (DuckDB mode only)
+7. **Cleanup** — Deletes processed TCX and CSV files
 
 ## Setup
 
 ### Prerequisites
 
-- [uv](https://github.com/astral-sh/uv) package manager installed
-- Polar AccessLink API credentials (see Configuration below)
+- Docker and Docker Compose
+- Polar AccessLink API credentials
+- Azure CLI credentials (`az login`) for Azure Storage
+- Valid `tokens_polar.json` (from a previous OAuth flow)
 
 ### Configuration
 
-Create a `.env` file in this directory with the following variables:
+1. Copy and edit the `.env` file:
+   ```bash
+   cp .env.example .env
+   # Edit .env with your credentials
+   ```
 
-```env
-# Polar API Configuration
-POLAR_CLIENT_ID=your_client_id_here
-POLAR_CLIENT_SECRET=your_client_secret_here
-POLAR_REDIRECT_PORT=5000
-POLAR_MEMBER_ID=your_member_id_here
+2. Ensure `tokens_polar.json` exists (from a previous OAuth authorization).
 
-# File Paths
-OUTPUT_DIR=../../hr_data
+3. Create the `local_data/` directory for DuckDB mode:
+   ```bash
+   mkdir -p local_data
+   # Optionally copy an existing DuckDB database:
+   # cp ../../hr_data/database_v2.duckdb local_data/
+   ```
 
-# Azure Storage Configuration (REQUIRED for this job)
-AZURE_STORAGE_ENABLED=true
-AZURE_STORAGE_ACCOUNT_NAME=your_storage_account
-AZURE_STORAGE_CONTAINER_NAME=workout-data
-```
+### Environment Variables
 
-**Note:** This job requires Azure Storage to be enabled to check for existing files and upload new ones.
-
-### First Run
-
-On the first run, the job will:
-1. Open your browser for OAuth authorization
-2. Create `tokens_polar.json` to store access/refresh tokens
-3. Register with Polar API (idempotent operation)
-
-Subsequent runs will use the stored tokens (auto-refresh if expired).
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `POLAR_CLIENT_ID` | Yes | Polar API client ID |
+| `POLAR_CLIENT_SECRET` | Yes | Polar API client secret |
+| `POLAR_REDIRECT_PORT` | No | OAuth callback port (default: 5000) |
+| `POLAR_MEMBER_ID` | No | Polar member ID |
+| `DATABASE_TYPE` | No | `duckdb` (default) or `postgres` |
+| `POLAR_TOKENS_FILE` | No | Path to token file (default: jobs/import/tokens_polar.json) |
+| `DUCKDB_PATH` | No | Path to DuckDB file (default: local_data/database_v2.duckdb) |
+| `OUTPUT_DIR` | No | Output directory (default: local_data) |
+| `AZURE_STORAGE_ENABLED` | No | Enable Azure upload (default: false) |
+| `AZURE_STORAGE_ACCOUNT_NAME` | If Azure | Storage account name |
+| `AZURE_STORAGE_CONTAINER_NAME` | No | Container name (default: workout-data) |
+| `POSTGRES_HOST` | If postgres | PostgreSQL hostname |
+| `POSTGRES_PORT` | No | PostgreSQL port (default: 5432) |
+| `POSTGRES_DATABASE` | If postgres | Database name |
+| `POSTGRES_USER` | If postgres | Username |
+| `POSTGRES_PASSWORD` | If postgres | Password |
 
 ## Usage
 
-### Run Locally with uv
+### Run with Docker Compose
 
 ```bash
-# Navigate to the job directory
-cd jobs/raw-import
+cd jobs/import
 
-# Copy and edit the example .env file
-cp .env.example .env
-# Edit .env with your credentials
+# Build and run (DuckDB mode — set DATABASE_TYPE=duckdb in .env)
+docker compose build
+docker compose up
 
-# Run the job
-uv run main.py
+# Run with PostgreSQL (set DATABASE_TYPE=postgres in .env)
+docker compose up
 ```
 
-The `uv run` command will:
-- Create a virtual environment (if needed)
-- Install all dependencies from pyproject.toml
-- Execute main.py
+### Test Modes
 
-### Run with Docker
+**DuckDB (local):**
+- Set `DATABASE_TYPE=duckdb` in `.env`
+- DuckDB file is stored in `local_data/` (volume-mounted into container)
+- Downloaded files (TCX/CSV) are also saved to `local_data/`
 
-Build and run using Docker Compose:
+**PostgreSQL (remote):**
+- Set `DATABASE_TYPE=postgres` in `.env`
+- Configure `POSTGRES_*` variables to point to your PostgreSQL server
+- Downloaded files are still saved to `local_data/`
+
+### Test Cleanup Script
+
+For testing, use `test_cleanup.sh` to remove the last N workout entries so the job has new data to process:
 
 ```bash
-# Navigate to the job directory
-cd jobs/raw-import
+# Remove last 2 entries from local DuckDB
+./test_cleanup.sh --db duckdb
 
-# Copy and edit the example .env file
-cp .env.example .env
-# Edit .env with your credentials
+# Remove last 2 entries from PostgreSQL
+./test_cleanup.sh --db postgres
 
-# Create empty tokens file (will be populated on first run)
-touch tokens_polar.json
-
-# Build and run with docker-compose
-docker-compose up --build
+# Remove last 3 entries
+./test_cleanup.sh --db duckdb -n 3
 ```
 
-Or build and run manually:
-
-```bash
-# Build from repository root
-cd ../..
-docker build -f jobs/raw-import/Dockerfile -t polar-raw-import .
-
-# Run with volume mounts for config
-docker run \
-  -v $(pwd)/jobs/raw-import/.env:/app/jobs/raw-import/.env \
-  -v $(pwd)/jobs/raw-import/tokens_polar.json:/app/jobs/raw-import/tokens_polar.json \
-  -v $(pwd)/hr_data:/app/hr_data \
-  polar-raw-import
-```
-
-**Note:** For Azure authentication in Docker, you may need to mount Azure credentials:
-```bash
-# Mount Azure CLI credentials from host
-docker run \
-  -v ~/.azure:/root/.azure:ro \
-  ... other options ...
-  polar-raw-import
-```
+**Note:** This script runs on the host (not in Docker). It requires `duckdb` CLI for DuckDB mode or `psql` for PostgreSQL mode.
 
 ## Files
 
-- `main.py` - Main entry point for the import job
-- `pyproject.toml` - Project dependencies and metadata
-- `.env` - Environment variables (gitignored)
-- `tokens_polar.json` - OAuth tokens (gitignored, created on first run)
-- `README.md` - This file
-
-## Output
-
-The job will:
-- List all available exercises from Polar API
-- Check Azure Storage for existing workouts (by CSV files in `polar_csv/` folder)
-- Download only new exercises as TCX files (those not in Azure)
-- Convert TCX to Polar-compatible CSV format
-- Upload both TCX and CSV to Azure Blob Storage:
-  - CSV files: `polar_csv/{workoutId}.csv`
-  - TCX files: `polar_tcx/{workoutId}.tcx`
-- Display summary statistics
-
-Files are saved locally to `OUTPUT_DIR` and uploaded to Azure Storage.
+| File | Description |
+|------|-------------|
+| `main.py` | Main entry point — full import workflow |
+| `pyproject.toml` | Dependencies and project metadata |
+| `Dockerfile` | Docker image definition |
+| `docker-compose.yml` | Docker Compose configuration |
+| `.env` | Environment variables (gitignored) |
+| `.env.example` | Example environment configuration |
+| `tokens_polar.json` | OAuth tokens (gitignored) |
+| `test_cleanup.sh` | Test helper to remove DB entries (excluded from Docker) |
+| `local_data/` | Volume mount for DuckDB + files (gitignored) |
 
 ## Troubleshooting
 
-### OAuth Authorization Failed
+### Polar API 503 Errors
+The job includes retry logic (3 attempts, 30s delay). If the API remains unavailable, wait and re-run.
 
-- Ensure `POLAR_CLIENT_ID` and `POLAR_CLIENT_SECRET` are correct
-- Check that redirect URI in Polar admin console matches `http://localhost:{REDIRECT_PORT}/callback`
-- Delete `tokens_polar.json` to force re-authorization
-
-### Azure Storage Errors
-
-- Ensure `AZURE_STORAGE_ENABLED=true` in `.env` file
-- Verify `AZURE_STORAGE_ACCOUNT_NAME` is correct
-- Authenticate with Azure CLI: `az login`
-- Check that you have permissions to access the storage account
-- Verify the container exists (job will create it if missing)
-
-### Missing Dependencies
-
-```bash
-# Reinstall dependencies
-uv sync --reinstall
+### Azure Storage Authentication
+Mount Azure CLI credentials into the container (done automatically in docker-compose.yml):
+```yaml
+volumes:
+  - ~/.azure:/root/.azure:ro
 ```
+
+### Path Resolution
+The container runs with WORKDIR `/app` (repo root). All paths in `.env` are relative to this root. The `config.py` module resolves paths using `Path(__file__).parent.parent.parent` which also resolves to `/app`.
 
 ## Related
 
+- Notebook: `../../notebooks/polar_accesslink_workflow_v0.2.md`
 - Polar module: `../../polar/`
-- Notebooks: `../../notebooks/`
-- Output directory: `../../hr_data/`
-
-## Docker Support
-
-This job can be containerized using Docker. See `Dockerfile` for building a container image.
+- Storage modules: `../../polar/storage/`

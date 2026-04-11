@@ -1,22 +1,28 @@
 [project]
-name = "polar-raw-import"
-version = "0.1.0"
-description = "Raw import job for Polar AccessLink: Download TCX and convert to CSV"
+name = "polar-import-job"
+version = "0.2.0"
+description = "Full import job for Polar AccessLink: Download TCX, convert CSV, import to DB, upload to Azure"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "requests>=2.32.0",
     "python-dotenv>=1.0.0",
+    "pandas>=2.0.0",
+    "duckdb>=0.9.0",
+    "psycopg[binary]>=3.0.0",
     "azure-storage-blob>=12.27.0",
     "azure-identity>=1.25.0",
+    "ipython>=8.0.0",
 ]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = []
+[tool.hatch.build.targets.wheel]
+packages = ["."]
 
-[project.scripts]
-raw-import = "main:main"
+[tool.uv]
+
+[dependency-groups]
+dev = []

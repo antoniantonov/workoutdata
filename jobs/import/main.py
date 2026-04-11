@@ -1,237 +1,127 @@
-"""Raw Import Job for Polar AccessLink Workouts.
+"""Polar AccessLink Import Job — Full Workflow.
 
-This script downloads TCX files from Polar API and converts them to CSV format.
-It checks Azure Blob Storage to avoid re-downloading files that already exist.
+Replicates the complete workflow from notebooks/polar_accesslink_workflow_v0.2.md:
+1. OAuth token validation / authorization
+2. Register user with Polar API
+3. List exercises, filter new ones (database-based deduplication)
+4. Download new exercises as TCX, convert to CSV, upload to Azure
+5. Import CSVs into the configured database (DuckDB or PostgreSQL)
+6. Upload DuckDB database to Azure (DuckDB mode only)
+7. Cleanup processed TCX and CSV files
 
-Workflow:
-1. List all exercises from Polar API
-2. Check Azure Storage for existing CSV files (by workoutId)
-3. Download only TCX files that are NOT already in Azure Storage
-4. Convert TCX to Polar-compatible CSV format
-5. Upload both TCX and CSV files to Azure Storage
-
-Configuration is loaded from environment variables via .env file.
-OAuth tokens are stored in tokens_polar.json.
+Configuration is loaded from environment variables (via .env file).
+OAuth tokens are read from tokens_polar.json or environment variables.
 """
 import sys
+import time
 from pathlib import Path
-from typing import Dict, List
 
 # Add repository root to path
-# __file__ is jobs/raw-import/main.py
-# parent = jobs/raw-import
-# parent.parent = jobs
-# parent.parent.parent = repo root
+# __file__ is jobs/import/main.py → parent.parent.parent = repo root
 repo_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(repo_root))
 
 from polar.utils.config import load_configuration
-from polar.api.users import register_user, get_user_info, get_physical_info
-from polar.api.exercises import (
-    list_exercises,
-    display_exercises,
-    download_tcx_and_convert_to_csv,
-    generate_workout_id_from_start_time,
-)
-from polar.utils.common import get_field
-from polar.cloud.azure import (
-    is_azure_storage_enabled,
-    list_azure_storage_blobs,
-    upload_file_to_azure_storage,
-)
+from polar.workflow import run_polar_workflow
+from polar.storage import duckdb as duckdb_storage
+from polar.storage import postgres as postgres_storage
+from polar.ingest import workouts as import_tools
 
-
-def filter_exercises_not_in_azure(
-    exercises: List[Dict[str, object]]
-) -> List[Dict[str, object]]:
-    """Filter exercises to only include those not already in Azure Storage.
-    
-    Args:
-        exercises: List of exercise dictionaries from Polar API
-    
-    Returns:
-        List of exercises that don't have corresponding CSV files in Azure Storage
-    """
-    if not is_azure_storage_enabled():
-        print("⚠️  Azure Storage is disabled. Cannot check for existing files.")
-        print("   All exercises will be downloaded.")
-        return exercises
-    
-    print("\n🔍 Checking Azure Storage for existing workout files...")
-    
-    # List all CSV files in Azure Storage
-    csv_blobs = list_azure_storage_blobs(prefix="polar_csv/")
-    
-    # Extract workout IDs from blob names (format: polar_csv/{workoutId}.csv)
-    existing_workout_ids = set()
-    for blob_name in csv_blobs:
-        # Extract workoutId from blob name
-        if blob_name.startswith("polar_csv/") and blob_name.endswith(".csv"):
-            workout_id = blob_name.replace("polar_csv/", "").replace(".csv", "")
-            existing_workout_ids.add(workout_id)
-    
-    print(f"✅ Found {len(existing_workout_ids)} existing workouts in Azure Storage")
-    
-    # Filter exercises to only those not in Azure
-    new_exercises = []
-    for ex in exercises:
-        start_time = get_field(ex, 'start_time', 'start-time', 'local_start_time')
-        if start_time:
-            workout_id = generate_workout_id_from_start_time(start_time)
-            if workout_id not in existing_workout_ids:
-                new_exercises.append(ex)
-            else:
-                exercise_id = get_field(ex, 'id', 'exercise_id')
-                print(f"  ⏭ Skipping exercise {exercise_id} (workoutId {workout_id} already in Azure)")
-    
-    print(f"\n✅ Found {len(new_exercises)} new exercise(s) to download (out of {len(exercises)} total)")
-    return new_exercises
+MAX_RETRIES = 3
+RETRY_DELAY = 30  # seconds
 
 
 def main():
-    """Execute raw import workflow: Download TCX, convert to CSV, upload to Azure."""
+    """Execute the full Polar AccessLink import workflow."""
     print("=" * 80)
-    print("RAW IMPORT JOB - Polar AccessLink TCX Download & Conversion")
+    print("POLAR IMPORT JOB — Full Workflow (Docker)")
     print("=" * 80)
     print()
-    
-    # Step 1: Load configuration (includes token validation)
+
+    # ── Step 1: Load configuration ──────────────────────────────────────
     print("Step 1: Loading configuration...")
     try:
         config = load_configuration()
     except (ValueError, FileNotFoundError) as e:
         print(f"❌ ERROR: Configuration failed: {e}")
         sys.exit(1)
-    
-    output_dir = config['OUTPUT_DIR']
-    access_token = config['ACCESS_TOKEN']
     print()
-    
-    # Verify Azure Storage is enabled
-    if not is_azure_storage_enabled():
-        print("❌ ERROR: Azure Storage is NOT enabled!")
-        print("   This job requires Azure Storage to check for existing files.")
-        print("   Please set AZURE_STORAGE_ENABLED=true and configure storage account.")
-        return
-    
-    # Step 2: Register user
-    print("Step 2: Registering user with Polar API...")
-    polar_user_id = register_user(
-        access_token=access_token,
-        config=config,
-        member_id=config['MEMBER_ID']
-    )
-    print()
-    
-    # Step 3: List exercises from Polar API
-    print("Step 3: Listing exercises from Polar API...")
-    exercises = list_exercises(
-        access_token=access_token,
-        api_base=config['API_BASE']
-    )
-    
-    if not exercises:
-        print("⚠️  No exercises available from Polar API.")
+
+    # ── Step 2: Run the Polar workflow (with retries for transient errors) ─
+    print("Step 2: Running Polar AccessLink workflow...")
+    result = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            result = run_polar_workflow(config=config, timeout=300)
+            break
+        except Exception as e:
+            error_msg = str(e)
+            if ("503" in error_msg or "Service" in error_msg) and attempt < MAX_RETRIES:
+                print(f"⚠️  Attempt {attempt}/{MAX_RETRIES} failed (API unavailable). Retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+            else:
+                print(f"❌ ERROR: Polar workflow failed: {e}")
+                sys.exit(1)
+
+    processed_csv_files = result.get('processed_csv_files', [])
+
+    if not processed_csv_files:
+        print("\nℹ️  No new CSV files to import. Workflow complete.")
         print("=" * 80)
-        return
-    
-    # Display all exercises
-    display_exercises(exercises)
-    
-    # Step 4: Filter exercises - only download those NOT in Azure Storage
-    print("\nStep 4: Filtering exercises based on Azure Storage...")
-    new_exercises = filter_exercises_not_in_azure(exercises)
-    
-    if not new_exercises:
-        print("\n⚠️  All exercises are already in Azure Storage. Nothing new to download.")
-        print("=" * 80)
-        return
-    
-    # Step 5: Fetch user info for CSV conversion
-    print("\nStep 5: Fetching user info for CSV conversion parameters...")
-    user_info = get_user_info(polar_user_id, access_token, config=config)
-    
-    # Extract user name with default
-    name = "Anton Antonov "  # Default
-    if user_info and 'first-name' in user_info and 'last-name' in user_info:
-        name = f"{user_info.get('first-name', '')} {user_info.get('last-name', '')} "
-        print(f"✅ User name: {name.strip()}")
-    
-    # Get physical information
-    physical_info = get_physical_info(polar_user_id, access_token, config=config)
-    
-    # Extract parameters from physical_info
-    weight = physical_info.get('weight', 0.0)
-    height = physical_info.get('height', 0.0)
-    hr_max = physical_info.get('maximum-heart-rate', 0)
-    hr_sit = physical_info.get('resting-heart-rate', 0)
-    vo2max = physical_info.get('vo2-max', 0)
-    
-    # Step 6: Download TCX files and convert to CSV
-    print("\nStep 6: Downloading TCX files and converting to CSV...")
-    print("=" * 80)
-    
-    downloaded_count = 0
-    uploaded_count = 0
-    
-    for i, exercise in enumerate(new_exercises, 1):
-        exercise_id = get_field(exercise, 'id', 'exercise_id')
-        start_time = get_field(exercise, 'start_time', 'start-time', 'local_start_time')
-        
-        print(f"\n--- Processing exercise {i}/{len(new_exercises)} ---")
-        print(f"Exercise ID: {exercise_id}")
-        print(f"Start Time: {start_time}")
-        
-        # Download TCX and convert to CSV
-        result = download_tcx_and_convert_to_csv(
-            exercise_id=exercise_id,
-            access_token=access_token,
-            output_dir=output_dir,
-            name=name,
-            height=height,
-            weight=weight,
-            hr_max=hr_max,
-            hr_sit=hr_sit,
-            vo2max=vo2max,
-            api_base=config['API_BASE'],
-            start_time=start_time
+        sys.exit(0)
+
+    # ── Step 3: Import CSVs into the database ───────────────────────────
+    db_type = config.get('DATABASE_TYPE', 'duckdb')
+    glob_patterns = ["Anton_Antonov*.CSV"]
+
+    print(f"\nStep 3: Importing CSVs into {db_type.upper()} database...")
+    print("-" * 60)
+
+    try:
+        if db_type == 'postgres':
+            summary = postgres_storage.import_workout_from_directory(
+                glob_patterns, config
+            )
+        else:
+            summary = duckdb_storage.import_workout_from_directory(
+                glob_patterns, config
+            )
+        print(summary)
+    except Exception as e:
+        print(f"❌ ERROR: Database import failed: {e}")
+        sys.exit(1)
+
+    # ── Step 4: Upload DuckDB to Azure (DuckDB mode only) ──────────────
+    if db_type == 'duckdb':
+        print("\nStep 4: Uploading DuckDB database to Azure...")
+        try:
+            duckdb_storage.upload_database_to_azure(config)
+        except Exception as e:
+            print(f"⚠️  WARNING: DuckDB upload to Azure failed: {e}")
+
+    # ── Step 5: Cleanup processed files ─────────────────────────────────
+    print("\nStep 5: Cleaning up processed files...")
+    print("-" * 60)
+
+    deletion_patterns = ["*.CSV", "*.tcx"]
+    try:
+        deletion_summary = import_tools.delete_files_from_directory(
+            deletion_patterns, config
         )
-        
-        if result is not None:
-            csv_path, tcx_path = result
-            downloaded_count += 1
-            
-            # Generate workout ID for Azure blob names
-            workout_id = generate_workout_id_from_start_time(start_time)
-            
-            # Upload CSV to Azure Storage
-            try:
-                csv_blob_name = f"polar_csv/{workout_id}.csv"
-                csv_blob_url = upload_file_to_azure_storage(csv_path, blob_name=csv_blob_name)
-                if csv_blob_url:
-                    uploaded_count += 1
-                    print(f"✅ CSV uploaded to Azure: {csv_blob_name}")
-            except Exception as e:
-                print(f"❌ Failed to upload CSV to Azure: {e}")
-            
-            # Upload TCX to Azure Storage
-            try:
-                tcx_blob_name = f"polar_tcx/{workout_id}.tcx"
-                tcx_blob_url = upload_file_to_azure_storage(tcx_path, blob_name=tcx_blob_name)
-                if tcx_blob_url:
-                    uploaded_count += 1
-                    print(f"✅ TCX uploaded to Azure: {tcx_blob_name}")
-            except Exception as e:
-                print(f"❌ Failed to upload TCX to Azure: {e}")
-    
-    # Step 8: Display summary
+        print(deletion_summary)
+    except Exception as e:
+        print(f"⚠️  WARNING: File cleanup failed: {e}")
+
+    # ── Done ────────────────────────────────────────────────────────────
     print()
     print("=" * 80)
-    print("RAW IMPORT JOB COMPLETE")
+    print("✅ POLAR IMPORT JOB COMPLETE")
     print("=" * 80)
-    print(f"  - Total exercises available: {len(exercises)}")
-    print(f"  - New exercises downloaded: {downloaded_count}")
-    print(f"  - Files uploaded to Azure: {uploaded_count} (TCX + CSV)")
+    print(f"  - Database type: {db_type.upper()}")
+    print(f"  - New CSVs processed: {len(processed_csv_files)}")
+    if db_type == 'duckdb':
+        print(f"  - DuckDB uploaded to Azure: yes (if enabled)")
+    print(f"  - Files cleaned up: yes")
     print("=" * 80)
 
 

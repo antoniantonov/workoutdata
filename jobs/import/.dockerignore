@@ -44,11 +44,10 @@ env/
 .DS_Store
 Thumbs.db
 
-# Data files (too large for container)
+# Data files (too large for container, but keep CSVs needed for config)
 hr_data/*.duckdb
 hr_data/*.CSV
 hr_data/*.tcx
-data/
 
 # Notebooks
 notebooks/
@@ -58,3 +57,7 @@ docs/
 
 # Tests
 tests/
+
+# Test cleanup script (not needed in container)
+jobs/import/test_cleanup.sh
+jobs/import/local_data/

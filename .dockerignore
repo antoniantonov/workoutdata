@@ -1,0 +1,26 @@
+# Docker build context exclusions for jobs/import Docker image
+.git/
+.github/
+__pycache__/
+*.py[cod]
+*.duckdb
+*.duckdb.wal
+hr_data/*.CSV
+hr_data/*.tcx
+notebooks/*.ipynb
+temp/
+output/
+garmin/
+garmindb.log
+.venv/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+jobs/import/local_data/
+jobs/import/.env
+jobs/import/tokens_polar.json
+jobs/import/test_cleanup.sh

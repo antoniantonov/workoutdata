@@ -44,3 +44,6 @@ uv.lock
 # OS
 .DS_Store
 Thumbs.db
+
+local_data/
+local_data/*

@@ -172,7 +172,6 @@ azure_storage_account = config.get("azure-storage-account") or STORAGE_ACCOUNT_N
 azure_storage_container = config.get("azure-storage-container") or "workoutdata"
 
 access_token = config.require_secret("access-token")
-refresh_token = config.require_secret("refresh-token")
 token_type = config.get("token-type") or "bearer"
 
 image_tag = config.require("image-tag")
@@ -208,7 +207,6 @@ container_job = app.Job(
             app.SecretArgs(name="polar-client-secret", value=polar_client_secret),
             app.SecretArgs(name="postgres-password", value=postgres_password),
             app.SecretArgs(name="access-token", value=access_token),
-            app.SecretArgs(name="refresh-token", value=refresh_token),
         ],
     ),
     template=app.JobTemplateArgs(
@@ -240,10 +238,11 @@ container_job = app.Job(
                     app.EnvironmentVarArgs(name="AZURE_STORAGE_ENABLED", value="true"),
                     app.EnvironmentVarArgs(name="AZURE_STORAGE_ACCOUNT_NAME", value=azure_storage_account),
                     app.EnvironmentVarArgs(name="AZURE_STORAGE_CONTAINER_NAME", value=azure_storage_container),
+                    # UAMI client ID for DefaultAzureCredential
+                    app.EnvironmentVarArgs(name="AZURE_CLIENT_ID", value=uami.client_id),
 
                     # OAuth tokens (loaded from env instead of tokens_polar.json)
                     app.EnvironmentVarArgs(name="ACCESS_TOKEN", secret_ref="access-token"),
-                    app.EnvironmentVarArgs(name="REFRESH_TOKEN", secret_ref="refresh-token"),
                     app.EnvironmentVarArgs(name="TOKEN_TYPE", value=token_type),
 
                     # File paths (relative to /app inside container)

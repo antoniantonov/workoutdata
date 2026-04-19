@@ -1,8 +1,9 @@
 # Deployment Report: Polar Import Job → Azure Container Apps Job
 
 **Branch:** `dev/anton/pulumi-deploy-import-job`  
-**Commit:** `f5aa333` (local only — not pushed)  
-**Date:** 2026-04-18  
+**Commits:** `2348c3b` (initial), `7d4daa1` (amd64 fix), `5d11ff2` (runtime fixes)  
+**Date:** 2026-04-19  
+**Status:** ✅ Deployed and verified — job ran successfully
 
 ---
 
@@ -91,7 +92,11 @@ All Pulumi infrastructure-as-code files for deploying the Polar workout import j
 
 3. **PostgreSQL admin annotated as future prep** — Added a comment clarifying the `pg_admin` resource prepares for future Entra ID auth migration; the job currently uses password auth.
 
-4. **`config_from_env.sh` updated** — Now extracts `refresh_token` from `tokens_polar.json` and sets it as a Pulumi secret.
+4. **`AZURE_CLIENT_ID` for UAMI** — Added `AZURE_CLIENT_ID` env var pointing to the UAMI's client ID so `DefaultAzureCredential` can discover the User Assigned Managed Identity in the container.
+
+5. **Docker `--platform linux/amd64`** — Apple Silicon builds default to `arm64`, but Azure Container Apps requires `amd64`. Added `--platform linux/amd64` to the Docker build in `deploy.sh`.
+
+6. **Refresh token is optional** — `tokens_polar.json` has `null` for `refresh_token`. Changed from `require_secret` to not setting the env var at all (`os.getenv('REFRESH_TOKEN')` returns `None`, which passes validation).
 
 ---
 
@@ -167,12 +172,32 @@ On first deploy, Azure Entra ID may take a few minutes to propagate the new UAMI
 
 ---
 
+## Deployment Verification
+
+The job was manually triggered and completed successfully:
+
+```
+POLAR IMPORT JOB COMPLETE
+- Database type: POSTGRES
+- New CSVs processed: 14
+- Files cleaned up: yes
+```
+
+**Execution history:**
+
+| Execution | Status | Notes |
+|-----------|--------|-------|
+| `polar-import-job-2f2r4wv` | ❌ Failed | `REFRESH_TOKEN` validation error (value was `"None"`) |
+| `polar-import-job-mt9wxfn` | ❌ Failed | `DefaultAzureCredential` couldn't find UAMI (missing `AZURE_CLIENT_ID`) |
+| `polar-import-job-rh0pflk` | ✅ Succeeded | 14 CSVs processed, 28 files cleaned up |
+
+---
+
 ## What's Left Before Going Live
 
-- [ ] **Review this commit** — `git log -1 --stat`, `git diff HEAD~1`
-- [ ] **Push branch** — `git push origin dev/anton/pulumi-deploy-import-job`
-- [ ] **Run `./deploy.sh`** — builds image, pushes to ACR, creates all Azure resources
-- [ ] **Trigger job manually** — verify it runs end-to-end
-- [ ] **Verify PostgreSQL connectivity** — confirm firewall allows Container Apps traffic
-- [ ] **Consider token refresh** — implement in app code if not already present
+- [x] **Deploy infrastructure** — all 8 Azure resources created
+- [x] **Trigger job manually** — verified end-to-end (14 CSVs processed)
+- [ ] **Verify PostgreSQL connectivity** — confirm imported data is in the database
+- [ ] **Consider token refresh** — implement in app code if Polar tokens expire
 - [ ] **Set a real `PULUMI_CONFIG_PASSPHRASE`** — for stronger secret encryption
+- [ ] **Merge branch** — create PR from `dev/anton/pulumi-deploy-import-job`

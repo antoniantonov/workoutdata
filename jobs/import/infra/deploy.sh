@@ -49,8 +49,9 @@ if [ "$INFRA_ONLY" = false ]; then
     az acr login --name "$ACR_NAME"
     echo
 
-    echo "Step 2: Building Docker image..."
+    echo "Step 2: Building Docker image (linux/amd64)..."
     docker build \
+        --platform linux/amd64 \
         -t "$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG" \
         -t "$ACR_LOGIN_SERVER/$IMAGE_NAME:latest" \
         -f "$REPO_ROOT/jobs/import/Dockerfile" \

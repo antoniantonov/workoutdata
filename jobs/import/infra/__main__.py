@@ -115,6 +115,19 @@ pg_admin = dbforpostgresql.Administrator(
 )
 
 # =============================================================================
+# PostgreSQL Firewall Rule — Allow Azure Services
+# Allows the Container Apps Job (and other Azure services) to connect to PG.
+# =============================================================================
+pg_firewall_azure = dbforpostgresql.FirewallRule(
+    "pg-allow-azure-services",
+    server_name=PG_SERVER_NAME,
+    resource_group_name=PG_RESOURCE_GROUP,
+    firewall_rule_name="AllowAllAzureServicesAndResourcesWithinAzureIps",
+    start_ip_address="0.0.0.0",
+    end_ip_address="0.0.0.0",
+)
+
+# =============================================================================
 # Log Analytics Workspace (required for Container Apps Environment)
 # =============================================================================
 log_workspace = operationalinsights.Workspace(
@@ -247,8 +260,13 @@ container_job = app.Job(
 
                     # File paths (relative to /app inside container)
                     app.EnvironmentVarArgs(name="OUTPUT_DIR", value="local_data"),
+                    app.EnvironmentVarArgs(name="DUCKDB_PATH", value="local_data/database_v2.duckdb"),
                     app.EnvironmentVarArgs(name="VO2MAX_DATA_PATH", value="data/v02max_data.csv"),
                     app.EnvironmentVarArgs(name="ZONES_CSV_PATH", value="hr_data/zones.csv"),
+
+                    # Run configuration
+                    app.EnvironmentVarArgs(name="TEST_RUN", value="false"),
+                    app.EnvironmentVarArgs(name="OVERWRITE_EXISTING_BLOBS", value="false"),
 
                     # Container flag
                     app.EnvironmentVarArgs(name="IN_CONTAINER", value="true"),

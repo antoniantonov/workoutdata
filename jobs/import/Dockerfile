@@ -35,6 +35,8 @@ WORKDIR /app
 
 # Set environment variable to indicate we're in a container
 ENV IN_CONTAINER=true
+# Ensure Python output is sent straight to the container logs
+ENV PYTHONUNBUFFERED=1
 
 # Run the import job using uv (with pyproject.toml from jobs/import)
 CMD ["uv", "run", "--project", "/app/jobs/import", "python", "/app/jobs/import/main.py"]

@@ -22,7 +22,9 @@ from pulumi_azure_native import (
     operationalinsights,
     app,
     dbforpostgresql,
+    network,
 )
+import pulumi_command as command
 
 config = pulumi.Config()
 
@@ -148,7 +150,77 @@ log_workspace_keys = operationalinsights.get_shared_keys_output(
 )
 
 # =============================================================================
-# Container Apps Environment
+# Networking — VNet + Service Endpoint to Storage
+#
+# Goal: let the Container Apps Job reach `muskulsa.blob.core.windows.net`
+# from within the VNet so the storage account's firewall (defaultAction=Deny)
+# accepts the request via a virtualNetworkRule on the aca-subnet.
+#
+# Layout (10.50.0.0/23):
+#   - aca-subnet  10.50.0.0/23   delegated to Microsoft.App/environments
+#                                + Microsoft.Storage service endpoint
+# =============================================================================
+vnet = network.VirtualNetwork(
+    "import-job-vnet",
+    resource_group_name=RESOURCE_GROUP_NAME,
+    virtual_network_name="polar-import-vnet",
+    location=LOCATION,
+    address_space=network.AddressSpaceArgs(address_prefixes=["10.50.0.0/23"]),
+)
+
+aca_subnet = network.Subnet(
+    "aca-subnet",
+    resource_group_name=RESOURCE_GROUP_NAME,
+    virtual_network_name=vnet.name,
+    subnet_name="aca-subnet",
+    address_prefix="10.50.0.0/23",
+    delegations=[
+        network.DelegationArgs(
+            name="aca-delegation",
+            service_name="Microsoft.App/environments",
+        ),
+    ],
+    service_endpoints=[
+        network.ServiceEndpointPropertiesFormatArgs(
+            service="Microsoft.Storage",
+            locations=[LOCATION],
+        ),
+    ],
+)
+
+# Add a virtualNetworkRule on the existing muskulsa storage account so its
+# firewall (defaultAction=Deny) accepts traffic from aca-subnet via the
+# Microsoft.Storage service endpoint.
+#
+# muskulsa is not managed by this stack (referenced via get_storage_account),
+# so we use the Azure CLI through a Command resource to PATCH only the rule —
+# without taking ownership of the entire storage account.
+storage_vnet_rule = command.local.Command(
+    "muskulsa-aca-vnet-rule",
+    create=aca_subnet.id.apply(
+        lambda subnet_id: (
+            f"az storage account network-rule add "
+            f"--resource-group {RESOURCE_GROUP_NAME} "
+            f"--account-name {STORAGE_ACCOUNT_NAME} "
+            f"--subnet {subnet_id}"
+        )
+    ),
+    delete=aca_subnet.id.apply(
+        lambda subnet_id: (
+            f"az storage account network-rule remove "
+            f"--resource-group {RESOURCE_GROUP_NAME} "
+            f"--account-name {STORAGE_ACCOUNT_NAME} "
+            f"--subnet {subnet_id} || true"
+        )
+    ),
+    triggers=[aca_subnet.id],
+    opts=pulumi.ResourceOptions(depends_on=[aca_subnet]),
+)
+
+# =============================================================================
+# Container Apps Environment (Consumption-only, VNet-integrated)
+# Consumption-only envs support VNet integration without workload profiles,
+# avoiding the workload-profiles base hourly charge.
 # =============================================================================
 container_env = app.ManagedEnvironment(
     "import-job-env",
@@ -161,6 +233,10 @@ container_env = app.ManagedEnvironment(
             customer_id=log_workspace.customer_id,
             shared_key=log_workspace_keys.primary_shared_key,
         ),
+    ),
+    vnet_configuration=app.VnetConfigurationArgs(
+        infrastructure_subnet_id=aca_subnet.id,
+        internal=False,
     ),
 )
 
@@ -187,10 +263,40 @@ azure_storage_container = config.get("azure-storage-container") or "workoutdata"
 access_token = config.require_secret("access-token")
 token_type = config.get("token-type") or "bearer"
 
-image_tag = config.require("image-tag")
+# Image tag resolution: mirrors the logic in .github/workflows/import-job-deploy.yml.
+# If `image-tag` is set in Pulumi config we honor it; otherwise we ask ACR for
+# the most-recent non-`latest` tag in the polar-import-job repository.
+# We shell out to `az acr` because tag listing is a data-plane operation that
+# pulumi_azure_native does not expose.
+configured_image_tag = config.get("image-tag")
+
+if configured_image_tag:
+    image_tag: pulumi.Input[str] = configured_image_tag
+else:
+    import time as _time
+    _latest_tag_lookup = command.local.Command(
+        "resolve-latest-acr-tag",
+        create=(
+            f"set -euo pipefail; "
+            f"TAG=$(az acr repository show-tags "
+            f"--name {ACR_NAME} "
+            f"--repository polar-import-job "
+            f"--orderby time_desc --top 50 -o tsv "
+            f"| grep -v '^latest$' | head -n 1); "
+            f"if [ -z \"$TAG\" ]; then "
+            f"  echo 'No deployable image tags found in ACR repository polar-import-job.' >&2; "
+            f"  exit 1; "
+            f"fi; "
+            f"printf '%s' \"$TAG\""
+        ),
+        # Re-run on every `pulumi up` so we always pick up the latest tag.
+        triggers=[str(_time.time())],
+    )
+    image_tag = _latest_tag_lookup.stdout.apply(lambda s: s.strip())
+
 cron_schedule = config.get("cron-schedule") or "0 6 * * *"
 
-image_name = f"{ACR_LOGIN_SERVER}/polar-import-job:{image_tag}"
+image_name = pulumi.Output.concat(f"{ACR_LOGIN_SERVER}/polar-import-job:", image_tag)
 
 # =============================================================================
 # Container Apps Job
@@ -278,7 +384,13 @@ container_job = app.Job(
         type=app.ManagedServiceIdentityType.USER_ASSIGNED,
         user_assigned_identities=[uami.id],
     ),
-    opts=pulumi.ResourceOptions(depends_on=[acr_pull_role]),
+    opts=pulumi.ResourceOptions(
+        depends_on=[
+            acr_pull_role,
+            storage_role,
+            storage_vnet_rule,
+        ]
+    ),
 )
 
 # =============================================================================
@@ -291,3 +403,5 @@ pulumi.export("container_env_name", container_env.name)
 pulumi.export("image", image_name)
 pulumi.export("acr_login_server", ACR_LOGIN_SERVER)
 pulumi.export("cron_schedule", cron_schedule)
+pulumi.export("vnet_name", vnet.name)
+pulumi.export("aca_subnet_id", aca_subnet.id)

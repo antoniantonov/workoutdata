@@ -174,6 +174,12 @@ aca_subnet = network.Subnet(
     virtual_network_name=vnet.name,
     subnet_name="aca-subnet",
     address_prefix="10.50.0.0/23",
+    # Container Apps Managed Environment (Consumption-only, VNet-integrated)
+    # requires the subnet to be delegated to Microsoft.App/environments at
+    # creation time. The earlier "delegation not allowed" error only appeared
+    # when trying to *update* an existing non-VNet env in place (which Azure
+    # rejects entirely — the env must be recreated, see replace_on_changes
+    # on container_env below).
     delegations=[
         network.DelegationArgs(
             name="aca-delegation",
@@ -237,6 +243,14 @@ container_env = app.ManagedEnvironment(
     vnet_configuration=app.VnetConfigurationArgs(
         infrastructure_subnet_id=aca_subnet.id,
         internal=False,
+    ),
+    # VNet config cannot be added to an existing Managed Environment
+    # (ManagedEnvironmentCannotAddVnetToExistingEnv). Force replacement when
+    # vnetConfiguration changes, and delete the old env before creating the
+    # new one so the same name can be reused.
+    opts=pulumi.ResourceOptions(
+        replace_on_changes=["vnetConfiguration"],
+        delete_before_replace=True,
     ),
 )
 

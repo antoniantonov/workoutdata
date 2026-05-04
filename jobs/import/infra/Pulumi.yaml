@@ -1,0 +1,6 @@
+name: workoutdata-import-job
+runtime:
+  name: python
+  options:
+    virtualenv: venv
+description: Deploy Polar workout import job as an Azure Container Apps Job

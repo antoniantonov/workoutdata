@@ -1,0 +1,88 @@
+name: Import Job - Deploy
+
+# Triggered when a new git tag is pushed.
+# The tag value is NOT used as the image tag — instead, the workflow
+# discovers the most recent non-`latest` tag in ACR and deploys that
+# image to the polar-import-job Container Apps Job.
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Override image tag (leave empty to auto-detect latest in ACR)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  ACR_NAME: humandcoded2
+  ACR_LOGIN_SERVER: humandcoded2.azurecr.io
+  IMAGE_REPOSITORY: polar-import-job
+  RESOURCE_GROUP: muskul.ai
+  JOB_NAME: polar-import-job
+
+jobs:
+  deploy:
+    name: Deploy to Container Apps Job
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Resolve image tag to deploy
+        id: resolve
+        run: |
+          set -euo pipefail
+          OVERRIDE="${{ github.event.inputs.image_tag }}"
+          if [ -n "${OVERRIDE}" ]; then
+            IMAGE_TAG="${OVERRIDE}"
+            echo "Using override image tag: ${IMAGE_TAG}"
+          else
+            # Most-recent non-`latest` tag, ordered by push time (descending).
+            IMAGE_TAG=$(az acr repository show-tags \
+              --name "${ACR_NAME}" \
+              --repository "${IMAGE_REPOSITORY}" \
+              --orderby time_desc \
+              --top 50 \
+              -o tsv \
+              | grep -v '^latest$' \
+              | head -n 1)
+            if [ -z "${IMAGE_TAG}" ]; then
+              echo "::error::No deployable image tags found in ACR repository ${IMAGE_REPOSITORY}."
+              exit 1
+            fi
+            echo "Resolved latest non-'latest' tag from ACR: ${IMAGE_TAG}"
+          fi
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "image=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Container Apps Job image
+        run: |
+          set -euo pipefail
+          az extension add --name containerapp --upgrade --only-show-errors >/dev/null
+          az containerapp job update \
+            --name "${JOB_NAME}" \
+            --resource-group "${RESOURCE_GROUP}" \
+            --image "${{ steps.resolve.outputs.image }}"
+
+      - name: Print deployment info
+        run: |
+          echo "=========================================="
+          echo "Deployed image: ${{ steps.resolve.outputs.image }}"
+          echo "Job:            ${JOB_NAME} (rg: ${RESOURCE_GROUP})"
+          echo "Triggered by:   ${{ github.ref }}"
+          echo "=========================================="

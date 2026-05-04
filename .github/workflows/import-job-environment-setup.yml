@@ -1,0 +1,118 @@
+name: Import Job - Environment Setup (Pulumi)
+
+# Manually-triggered workflow that runs the entire Pulumi stack for the
+# polar-import-job (VNet, ACA env, UAMI, role assignments, storage vnet rule,
+# Container Apps Job). Picks up the latest non-`latest` image tag from ACR
+# automatically when `image-tag` is not set in Pulumi config.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pulumi_action:
+        description: 'Pulumi action to run'
+        required: true
+        default: 'preview'
+        type: choice
+        options:
+          - preview
+          - up
+          - refresh
+          - destroy
+      image_tag_override:
+        description: 'Optional ACR image tag to pin (leave empty to auto-resolve latest)'
+        required: false
+        default: ''
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  PULUMI_STACK: prod
+  PULUMI_DIR: jobs/import/infra
+  PULUMI_CONFIG_PASSPHRASE: ${{ secrets.PULUMI_CONFIG_PASSPHRASE }}
+
+jobs:
+  pulumi:
+    name: Pulumi ${{ github.event.inputs.pulumi_action }}
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure Pulumi Azure auth (OIDC)
+        run: |
+          echo "ARM_USE_OIDC=true" >> "$GITHUB_ENV"
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> "$GITHUB_ENV"
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> "$GITHUB_ENV"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Pulumi CLI
+        uses: pulumi/actions@v5
+        with:
+          command: version
+
+      - name: Install Python dependencies
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          python -m venv venv
+          source venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pulumi login (Pulumi Cloud)
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+        run: pulumi login
+
+      - name: Select stack
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          source venv/bin/activate
+          pulumi stack select ${{ env.PULUMI_STACK }}
+
+      - name: Apply optional image-tag override
+        if: ${{ github.event.inputs.image_tag_override != '' }}
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          source venv/bin/activate
+          pulumi config set image-tag "${{ github.event.inputs.image_tag_override }}"
+
+      - name: Clear pinned image-tag (auto-resolve latest from ACR)
+        if: ${{ github.event.inputs.image_tag_override == '' }}
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          source venv/bin/activate
+          pulumi config rm image-tag || true
+
+      - name: Pulumi ${{ github.event.inputs.pulumi_action }}
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          source venv/bin/activate
+          case "${{ github.event.inputs.pulumi_action }}" in
+            preview)  pulumi preview ;;
+            up)       pulumi up --yes ;;
+            refresh)  pulumi refresh --yes ;;
+            destroy)  pulumi destroy --yes ;;
+            *) echo "Unknown action"; exit 1 ;;
+          esac
+
+      - name: Print stack outputs
+        if: ${{ github.event.inputs.pulumi_action == 'up' || github.event.inputs.pulumi_action == 'refresh' }}
+        working-directory: ${{ env.PULUMI_DIR }}
+        run: |
+          source venv/bin/activate
+          pulumi stack output

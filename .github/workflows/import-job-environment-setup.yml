@@ -61,9 +61,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install Pulumi CLI
-        uses: pulumi/actions@v5
-        with:
-          command: version
+        uses: pulumi/setup-pulumi@v2
 
       - name: Install Python dependencies
         working-directory: ${{ env.PULUMI_DIR }}

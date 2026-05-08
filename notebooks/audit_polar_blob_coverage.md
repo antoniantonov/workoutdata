@@ -329,6 +329,9 @@ print(f"✅ API exercise audit rows: {len(api_audit_df)}")
 ## Summary and issue tables
 
 ```{code-cell} ipython3
+import re
+from pathlib import Path
+
 pd.set_option('display.max_rows', None)
 pd.set_option('display.max_columns', None)
 pd.set_option('display.width', 160)
@@ -344,16 +347,31 @@ def show_issue_table(title: str, df: pd.DataFrame, empty_message: str) -> None:
         display(df)
 
 
-def sql_literal(value: object) -> str:
-    """Return a PostgreSQL-safe single-quoted literal for copyable SQL output."""
-    return "'" + str(value).replace("'", "''") + "'"
+DELETE_NOTEBOOK_PATH = Path.cwd() / 'delete_workouts_from_postgres.md' \
+    if 'notebooks' in str(Path.cwd()) \
+    else Path.cwd() / 'notebooks' / 'delete_workouts_from_postgres.md'
+
+PLACEHOLDER_BEGIN = '# <BEGIN_WORKOUT_IDS_PLACEHOLDER>'
+PLACEHOLDER_END = '# <END_WORKOUT_IDS_PLACEHOLDER>'
 
 
-def print_metadata_delete_sql(missing_metadata_blobs_df: pd.DataFrame) -> None:
-    """Print a copyable PostgreSQL DELETE statement without executing it."""
+def update_delete_notebook_workout_ids(
+    missing_metadata_blobs_df: pd.DataFrame,
+    notebook_path: Path = DELETE_NOTEBOOK_PATH,
+) -> None:
+    """Rewrite the workoutId placeholder block in the deletion notebook.
+
+    Replaces the lines between PLACEHOLDER_BEGIN and PLACEHOLDER_END in
+    ``notebook_path`` with a Python list of unique workoutId values from
+    ``missing_metadata_blobs_df``. Does not execute any deletion.
+    """
     print()
-    print("Copyable PostgreSQL cleanup query for these missing storage files")
+    print(f"Updating delete notebook: {notebook_path}")
     print("=" * 65)
+
+    if not notebook_path.exists():
+        print(f"⚠️ Delete notebook not found at {notebook_path}. Skipping update.")
+        return
 
     missing_workout_ids = sorted(
         missing_metadata_blobs_df['workoutId']
@@ -362,29 +380,50 @@ def print_metadata_delete_sql(missing_metadata_blobs_df: pd.DataFrame) -> None:
         .unique()
     )
 
-    if not missing_workout_ids:
-        print("-- No workout_metadata rows need deletion.")
+    if missing_workout_ids:
+        list_body = "\n".join(f"    {workout_id!r}," for workout_id in missing_workout_ids)
+        list_literal = f"workout_ids_to_delete: list[str] = [\n{list_body}\n]"
+    else:
+        list_literal = "workout_ids_to_delete: list[str] = []"
+
+    new_block = f"{PLACEHOLDER_BEGIN}\n{list_literal}\n{PLACEHOLDER_END}"
+
+    original_text = notebook_path.read_text(encoding='utf-8')
+
+    pattern = re.compile(
+        re.escape(PLACEHOLDER_BEGIN) + r".*?" + re.escape(PLACEHOLDER_END),
+        re.DOTALL,
+    )
+
+    if not pattern.search(original_text):
+        print(
+            f"⚠️ Could not find placeholder markers in {notebook_path.name}. "
+            "No changes were made."
+        )
         return
 
-    workout_id_literals = ",\n    ".join(sql_literal(workout_id) for workout_id in missing_workout_ids)
-    delete_sql = f"""-- Review this list before executing.
--- This deletes only PostgreSQL metadata rows whose CSV or TCX blob is missing.
-BEGIN;
+    updated_text = pattern.sub(new_block, original_text, count=1)
 
-DELETE FROM workout_metadata
-WHERE "workoutId" IN (
-    {workout_id_literals}
-);
+    if updated_text == original_text:
+        print(f"ℹ️ Delete notebook already up to date ({len(missing_workout_ids)} ID(s)).")
+        return
 
-COMMIT;"""
-
-    print(delete_sql)
+    notebook_path.write_text(updated_text, encoding='utf-8')
+    print(
+        f"✅ Wrote {len(missing_workout_ids)} workoutId value(s) into "
+        f"{notebook_path.name}."
+    )
 
 
 metadata_missing_csv_df = metadata_coverage_df[metadata_coverage_df['csv_blob_found'].eq(False)]
 metadata_missing_tcx_df = metadata_coverage_df[metadata_coverage_df['tcx_blob_found'].eq(False)]
 metadata_missing_any_blob_df = metadata_coverage_df[
     metadata_coverage_df['csv_blob_found'].eq(False) | metadata_coverage_df['tcx_blob_found'].eq(False)
+]
+metadata_orphaned_df = metadata_coverage_df[
+    metadata_coverage_df['csv_blob_found'].eq(False)
+    & metadata_coverage_df['tcx_blob_found'].eq(False)
+    & metadata_coverage_df['in_polar_api'].eq(False)
 ]
 api_missing_metadata_df = api_audit_df[api_audit_df['in_workout_metadata'].eq(False)] if not api_audit_df.empty else api_audit_df
 api_missing_any_blob_df = api_audit_df[
@@ -409,6 +448,7 @@ summary_df = pd.DataFrame([{
     'tcx_blob_workoutIds': len(tcx_blob_workout_ids),
     'metadata_missing_csv': len(metadata_missing_csv_df),
     'metadata_missing_tcx': len(metadata_missing_tcx_df),
+    'metadata_orphaned': len(metadata_orphaned_df),
     'api_missing_metadata': len(api_missing_metadata_df),
     'api_missing_csv_or_tcx': len(api_missing_any_blob_df),
     'duplicate_api_workoutIds': len(duplicate_api_workout_ids_df),
@@ -422,7 +462,13 @@ show_issue_table(
     metadata_missing_any_blob_df[['workoutId', 'csv_blob_found', 'tcx_blob_found', 'in_polar_api', 'status']],
     "✅ Every PostgreSQL metadata workoutId has both CSV and TCX blobs.",
 )
-print_metadata_delete_sql(metadata_missing_any_blob_df)
+update_delete_notebook_workout_ids(metadata_missing_any_blob_df)
+
+show_issue_table(
+    "Orphaned PostgreSQL workouts (no CSV, no TCX, not in Polar API)",
+    metadata_orphaned_df[['workoutId', 'csv_blob_found', 'tcx_blob_found', 'in_polar_api', 'status']],
+    "✅ No orphaned PostgreSQL workouts found (every metadata row has blobs or an API exercise).",
+)
 
 show_issue_table(
     "Polar API exercises missing PostgreSQL metadata",

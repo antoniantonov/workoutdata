@@ -22,10 +22,20 @@ This notebook:
 
 > Secrets are read from environment variables only. Do not hardcode credentials.
 
+## Configuration context
+
+This notebook loads the same project notebook environment as the notebooks under `notebooks/`:
+
+1. Load environment variables from `notebooks/.env` when present.
+2. Call `polar.utils.config.load_configuration()`.
+3. Use the returned `config` dictionary for PostgreSQL and DuckDB paths.
+
+Environment variables from your shell still work and can override/fill values when `notebooks/.env` is absent.
+
 ## Expected environment variables
 
 - PostgreSQL: `POSTGRES_CONNECTION_STRING` **or** `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DATABASE`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-- DuckDB path: `DUCKDB_PATH` (optional; default: `database_v2.duckdb`)
+- DuckDB path: `DUCKDB_PATH` (optional; usually set in `notebooks/.env`)
 - Garmin auth: `GARMIN_EMAIL` / `GARMIN_PASSWORD` **or** `GARMIN_SESSION_PATH`
 - Optional:
   - `GARMIN_ACTIVITY_LIMIT` (default: `200`)
@@ -50,10 +60,56 @@ import duckdb
 import importlib
 import pandas as pd
 
-repo_root = Path.cwd().parent.parent if "garmin/notebooks" in str(Path.cwd()) else Path.cwd()
-sys.path.insert(0, str(repo_root))
+
+def find_repo_root(start: Path) -> Path:
+    """Find the workoutdata repository root from a notebook working directory."""
+    start = start.resolve()
+    for candidate in [start, *start.parents]:
+        if (candidate / "polar").is_dir() and (candidate / "notebooks").is_dir():
+            return candidate
+    return start
+
+
+repo_root = find_repo_root(Path.cwd())
+notebook_context_dir = repo_root / "notebooks"
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
+
+# Load environment variables from the same notebook context used by /notebooks/*.md.
+try:
+    from dotenv import load_dotenv
+
+    env_candidates = [
+        notebook_context_dir / ".env",
+        repo_root / ".env",
+    ]
+    loaded_env_files = []
+    for env_file in env_candidates:
+        if env_file.exists():
+            load_dotenv(env_file, override=False)
+            loaded_env_files.append(env_file)
+
+    if loaded_env_files:
+        print("✅ Loaded environment variables from:")
+        for env_file in loaded_env_files:
+            print(f"  - {env_file}")
+    else:
+        print("ℹ️ No .env file found at:")
+        for env_file in env_candidates:
+            print(f"  - {env_file}")
+except ImportError:
+    print("ℹ️ python-dotenv is not installed; using existing environment variables")
+
+# The project notebooks keep token paths relative to /notebooks. Normalize that
+# here because this notebook may execute from /garmin/notebooks.
+tokens_file_env = os.getenv("POLAR_TOKENS_FILE")
+if tokens_file_env:
+    tokens_file_path = Path(tokens_file_env).expanduser()
+    if not tokens_file_path.is_absolute():
+        os.environ["POLAR_TOKENS_FILE"] = str((notebook_context_dir / tokens_file_path).resolve())
 
 from polar.storage import postgres as postgres_storage
+from polar.utils.config import load_configuration
 from polar.utils.workout_correlation import (
     build_garmin_activity_windows,
     correlate_workouts_by_overlap,
@@ -64,18 +120,15 @@ importlib.reload(postgres_storage)
 ```
 
 ```{code-cell} ipython3
-POSTGRES_CONFIG = {
-    "POSTGRES_CONNECTION_STRING": os.getenv("POSTGRES_CONNECTION_STRING"),
-    "POSTGRES_HOST": os.getenv("POSTGRES_HOST"),
-    "POSTGRES_PORT": os.getenv("POSTGRES_PORT", "5432"),
-    "POSTGRES_DATABASE": os.getenv("POSTGRES_DATABASE", "workout_data"),
-    "POSTGRES_USER": os.getenv("POSTGRES_USER"),
-    "POSTGRES_PASSWORD": os.getenv("POSTGRES_PASSWORD"),
-}
+config = load_configuration()
 
-DUCKDB_PATH = Path(os.getenv("DUCKDB_PATH", str(repo_root / "database_v2.duckdb")))
+POSTGRES_CONFIG = config
+DUCKDB_PATH = Path(config["DUCKDB_PATH"])
 GARMIN_ACTIVITY_LIMIT = int(os.getenv("GARMIN_ACTIVITY_LIMIT", "200"))
-GARMIN_DOWNLOAD_DIR = Path(os.getenv("GARMIN_DOWNLOAD_DIR", "/tmp/garmin_metadata"))
+
+_garmin_download_dir = Path(os.getenv("GARMIN_DOWNLOAD_DIR", "/tmp/garmin_metadata"))
+GARMIN_DOWNLOAD_DIR = _garmin_download_dir if _garmin_download_dir.is_absolute() else repo_root / _garmin_download_dir
+
 GARMIN_TIME_TOLERANCE_SECONDS = int(os.getenv("GARMIN_TIME_TOLERANCE_SECONDS", "300"))
 POLAR_LOCAL_TIMEZONE = os.getenv("POLAR_LOCAL_TIMEZONE", "UTC")
 
@@ -111,7 +164,7 @@ def load_polar_workout_metadata(config: dict) -> pd.DataFrame:
         conn.close()
 
 
-polar_metadata_df = load_polar_workout_metadata(POSTGRES_CONFIG)
+polar_metadata_df = load_polar_workout_metadata(config)
 polar_windows_df = normalize_polar_workout_windows(
     polar_metadata_df,
     local_timezone=POLAR_LOCAL_TIMEZONE,

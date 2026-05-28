@@ -1,0 +1,50 @@
+[project]
+name = "workoutdata-devcontainer"
+version = "0.1.0"
+description = "Development container environment for workoutdata notebooks and Python modules"
+requires-python = ">=3.14,<3.15"
+dependencies = [
+    "polar-workout-data",
+    "garmindb",
+    "fitfile",
+    "tcxfile",
+    "idbutils",
+    "azure-identity>=1.25.1",
+    "azure-storage-blob>=12.27.1",
+    "build>=1.0.0",
+    "cached-property>=2.0.1",
+    "duckdb>=1.4.2",
+    "garth>=0.6.3",
+    "ipykernel>=7.1.0",
+    "ipyleaflet>=0.20.0",
+    "ipython>=9.8.0",
+    "ipywidgets>=8.1.8",
+    "jupyterlab>=4.0.0",
+    "jupytext>=1.16.6",
+    "matplotlib>=3.8.0",
+    "matplotlib-inline>=0.2.1",
+    "numpy>=2.3.5",
+    "pandas>=2.3.3",
+    "plotly>=6.5.0",
+    "psycopg[binary]>=3.2.5",
+    "psycopg2-binary>=2.9.9",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "python-dateutil>=2.9.0.post0",
+    "python-dotenv>=1.2.1",
+    "requests>=2.32.5",
+    "snakemd>=2.2.0",
+    "sqlalchemy>=2.0.46",
+    "tornado>=6.5.4",
+    "tqdm>=4.67.1",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+polar-workout-data = { path = "../polar", editable = true }
+garmindb = { path = "../garmin/GarminDB-notebooks", editable = true }
+fitfile = { path = "../garmin/GarminDB-notebooks/Fit", editable = true }
+tcxfile = { path = "../garmin/GarminDB-notebooks/Tcx", editable = true }
+idbutils = { path = "../garmin/GarminDB-notebooks/utilities", editable = true }

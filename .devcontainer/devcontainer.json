@@ -1,0 +1,63 @@
+{
+  "name": "workoutdata Python",
+  "image": "mcr.microsoft.com/devcontainers/python:3.14-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/azure-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": {}
+  },
+  "workspaceFolder": "/workspaces/workoutdata",
+  "initializeCommand": "bash .devcontainer/initialize.sh",
+  "runArgs": [
+    "--env-file",
+    "${localWorkspaceFolder}/jobs/import/.env",
+    "--env-file",
+    "${localWorkspaceFolder}/notebooks/.env"
+  ],
+  "containerEnv": {
+    "PYTHONUNBUFFERED": "1",
+    "PYTHONPATH": "/workspaces/workoutdata",
+    "UV_PROJECT": "/workspaces/workoutdata/.devcontainer"
+  },
+  "remoteEnv": {
+    "PATH": "/workspaces/workoutdata/.devcontainer/.venv/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "forwardPorts": [
+    5000,
+    5001,
+    5432,
+    8888
+  ],
+  "portsAttributes": {
+    "5000": {
+      "label": "Polar OAuth callback"
+    },
+    "5001": {
+      "label": "Polar OAuth callback alternate"
+    },
+    "5432": {
+      "label": "PostgreSQL"
+    },
+    "8888": {
+      "label": "Jupyter"
+    }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-toolsai.jupyter",
+        "charliermarsh.ruff",
+        "tamasfe.even-better-toml"
+      ],
+      "settings": {
+        "python.defaultInterpreterPath": "/workspaces/workoutdata/.devcontainer/.venv/bin/python",
+        "python.terminal.activateEnvironment": true,
+        "jupyter.notebookFileRoot": "${workspaceFolder}",
+        "jupyter.kernels.excludePythonEnvironments": [],
+        "terminal.integrated.defaultProfile.linux": "bash"
+      }
+    }
+  }
+}

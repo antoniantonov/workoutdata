@@ -1,0 +1,18 @@
+services:
+  import-garmin:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: garmin-import-job
+    env_file:
+      - .env
+    volumes:
+      # DuckDB output + GarminDB SQLite input live under local_data.
+      - ./local_data:/app/local_data
+      # Only needed when GARMIN_DOWNLOAD=true: mount the garth session + config.
+      # The download phase writes its own GarminConnectConfig.json under
+      # local_data/.GarminDb and reuses the garth_session token found there or
+      # copied from this mount.
+      - ~/.GarminDb:/root/.GarminDb
+    environment:
+      - IN_CONTAINER=true

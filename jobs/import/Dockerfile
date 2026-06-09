@@ -2,7 +2,7 @@
 # Downloads TCX from Polar API, converts to CSV, uploads to Azure,
 # imports into database (DuckDB or PostgreSQL), and cleans up.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install system dependencies, Azure CLI, and uv
 RUN apt-get update && apt-get install -y \

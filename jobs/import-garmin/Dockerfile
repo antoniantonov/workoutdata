@@ -3,7 +3,7 @@
 # The optional live-download phase (GARMIN_DOWNLOAD=true) additionally needs the
 # 'download' extra (garmindb); enable it by switching the uv sync line below.
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 # Install uv (fast Python package manager).
 RUN apt-get update && apt-get install -y --no-install-recommends \

@@ -15,6 +15,15 @@ The repository uses a modular `polar` package organized by functionality:
 
 See [QUICKSTART.md](docs/QUICKSTART.md) for detailed usage instructions.
 
+## Import Jobs
+
+Containerized batch importers live under `jobs/`:
+
+- **`jobs/import/`** — Polar AccessLink workflow (download TCX → CSV → DuckDB/PostgreSQL → Azure).
+- **`jobs/import-garmin/`** — Garmin per-workout heart rate (with `workoutId` + GPS)
+  and sleep data into DuckDB/PostgreSQL, sourced from the GarminDB SQLite databases.
+  Selectable backend via `DATABASE_TYPE`; see [jobs/import-garmin/README.md](jobs/import-garmin/README.md).
+
 ## Devcontainer
 
 This repo includes a devcontainer setup for the Polar and Garmin Python/notebook workflows. VS Code auto-detects `.devcontainer/devcontainer.json`. It uses the Microsoft Python 3.14 Bookworm image and manages Python dependencies with `uv`.

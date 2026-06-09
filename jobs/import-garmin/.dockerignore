@@ -1,0 +1,40 @@
+# Query notebook — explicitly excluded from the image (per requirement).
+notebooks/
+
+# Token-renewal helpers — host-only utilities, excluded from the image.
+scripts/
+
+# Runtime data + secrets (mounted/injected at runtime, never baked in).
+local_data/
+.env
+garth_session
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.uv/
+uv.lock
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# garmindb writes this log to the working directory at runtime
+garmindb.log
+
+# IDEs / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

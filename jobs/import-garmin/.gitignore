@@ -1,0 +1,39 @@
+# Environment and credentials
+.env
+garth_session
+
+# Local data (DuckDB output, GarminDB SQLite input, generated config)
+local_data/*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# UV
+.uv/
+uv.lock
+
+# Jupytext / notebook checkpoints
+.ipynb_checkpoints/
+
+# garmindb writes this log to the working directory at runtime
+garmindb.log
+
+# IDEs / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store

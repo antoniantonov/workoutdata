@@ -4,7 +4,6 @@ garth_session
 
 # Local data (DuckDB output, GarminDB SQLite input, generated config)
 local_data/*
-!local_data/.gitkeep
 
 # Python
 __pycache__/

@@ -22,19 +22,16 @@ Grant on the **app's service principal** (`appId` above):
 | Role | Scope | Why |
 |---|---|---|
 | `Contributor` | subscription `6a1174a1-...` | Pre-existing. Covers `az acr push`, `az containerapp job update`, Pulumi resource CRUD. |
-| `User Access Administrator` | RG `muskul.ai` | Pulumi creates `RoleAssignment` (storage-blob-data-contributor on `muskulsa`). |
-| `User Access Administrator` | RG `humandcoded` | Pulumi creates `RoleAssignment` (acr-pull on `humandcoded2`) + PG admin. |
+| `User Access Administrator` | RG `muskul.ai` | Pulumi creates `RoleAssignment`s (storage-blob-data-contributor on `muskulsa`, acr-pull on `muskulacr`). |
 
 Idempotent grant commands:
 
 ```bash
 APP_ID=d806dbf8-1574-4792-8139-111009131b14
 SUB=6a1174a1-2fb7-4a1e-a7d9-6d98ace5ee79
-for RG in muskul.ai humandcoded; do
-  az role assignment create --assignee "$APP_ID" \
-    --role "User Access Administrator" \
-    --scope "/subscriptions/$SUB/resourceGroups/$RG"
-done
+az role assignment create --assignee "$APP_ID" \
+  --role "User Access Administrator" \
+  --scope "/subscriptions/$SUB/resourceGroups/muskul.ai"
 ```
 
 ## Federated credentials
@@ -63,6 +60,20 @@ done
 
 Verify: `az ad app federated-credential list --id "$APP_ID" -o table`
 
+## Azure resources
+
+| Resource | Name | Resource group |
+|---|---|---|
+| Container Registry | `muskulacr` (`muskulacr.azurecr.io`) | `muskul.ai` |
+| Storage account | `muskulsa` | `muskul.ai` |
+| Container Apps Job | `polar-import-job` | `muskul.ai` |
+| Log Analytics | `polar-import-logs` | `muskul.ai` |
+
+> The registry `humandcoded2` and the PostgreSQL server `humandcoded-pg` were
+> deleted along with the `humandcoded` resource group. The ACR was recreated as
+> `muskulacr` inside `muskul.ai`, and the job was moved to DuckDB-on-Blob so it
+> no longer needs a PostgreSQL server.
+
 ## GitHub repository secrets
 
 ```bash
@@ -75,18 +86,48 @@ gh secret set AZURE_SUBSCRIPTION_ID --repo "$REPO" --body "6a1174a1-2fb7-4a1e-a7
 printf '' | gh secret set PULUMI_CONFIG_PASSPHRASE --repo "$REPO"
 ```
 
-`PULUMI_ACCESS_TOKEN` is **not** required: the stack uses the local file
-backend (`pulumi login --local`), not Pulumi Cloud. The
-[import-job-environment-setup.yml](import-job-environment-setup.yml)
-workflow's `pulumi login` step runs without a token.
+## Pulumi: run it locally, not in CI
+
+[import-job-environment-setup.yml](import-job-environment-setup.yml) is **not
+usable as-is**. Two prerequisites are missing:
+
+1. `pulumi login` in that workflow requires `PULUMI_ACCESS_TOKEN` (Pulumi Cloud),
+   which is not set as a repo secret.
+2. `jobs/import/infra/Pulumi.prod.yaml` — which holds the stack config and the
+   encrypted secrets — is gitignored, so a CI checkout has no stack config and
+   `config.require(...)` fails.
+
+Until both are addressed, apply infrastructure changes from a workstation:
+
+```bash
+cd jobs/import/infra
+pulumi login file://~          # state lives in ~/.pulumi/stacks/workoutdata-import-job
+pulumi stack select prod
+pulumi preview
+pulumi up
+```
+
+Making it work in CI would require creating a Pulumi Cloud token, setting
+`PULUMI_ACCESS_TOKEN`, migrating the stack state to Pulumi Cloud, and committing
+`Pulumi.prod.yaml` (its secrets are already passphrase-encrypted, and
+`PULUMI_CONFIG_PASSPHRASE` is already a repo secret).
+
+The **build** and **deploy** workflows do not use Pulumi and work with the
+Azure OIDC secrets alone.
 
 ## GitHub environment
 
 Create environment `production` in **GitHub → Settings → Environments**.
-Required because [import-job-deploy.yml](import-job-deploy.yml)
+Required because [import-job-build.yml](import-job-build.yml),
+[import-job-deploy.yml](import-job-deploy.yml)
 and [import-job-environment-setup.yml](import-job-environment-setup.yml)
-both declare `environment: production` (matches the `github-workoutdata-env-production`
+all declare `environment: production` (matches the `github-workoutdata-env-production`
 federated credential subject).
+
+The build workflow declares it specifically so it can be dispatched from a
+feature branch — the only other federated credentials are for `refs/heads/master`
+and `refs/tags/*`. Keep the `production` environment free of deployment branch
+policies, or dev-branch dispatches will be rejected.
 
 No environment-scoped secrets needed — the four repo secrets above are
 inherited.

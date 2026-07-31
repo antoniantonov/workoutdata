@@ -19,7 +19,12 @@ import duckdb  # type: ignore
 import pandas as pd  # type: ignore
 from IPython.display import display
 
-from polar.cloud.azure import is_azure_storage_enabled, upload_file_to_azure_storage
+from polar.cloud.azure import (
+    download_file_from_azure_storage,
+    is_azure_storage_enabled,
+    list_azure_storage_blobs,
+    upload_file_to_azure_storage,
+)
 from polar.ingest.workouts import fix_missing_hr
 from polar.utils.common import process_vo2max_data_for_calories
 
@@ -841,6 +846,137 @@ def upload_database_to_azure(config: dict, db_path: Optional[str | Path] = None)
         return None
 
 
+# Blob name format produced by upload_database_to_azure(): duckdb/DD-MM-YYYY_HHMMSS.duckdb
+DUCKDB_BLOB_PREFIX = "duckdb/"
+DUCKDB_BLOB_TIMESTAMP_FORMAT = "%d-%m-%Y_%H%M%S"
+
+
+def _parse_duckdb_blob_timestamp(blob_name: str) -> Optional[datetime]:
+    """Parse the UTC timestamp encoded in a DuckDB snapshot blob name.
+
+    Returns None when the blob name does not follow the expected
+    ``duckdb/DD-MM-YYYY_HHMMSS.duckdb`` convention.
+    """
+    stem = Path(blob_name).stem
+    try:
+        return datetime.strptime(stem, DUCKDB_BLOB_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def get_latest_duckdb_blob_name(config: dict) -> Optional[str]:
+    """Find the most recent DuckDB snapshot blob in Azure Blob Storage.
+
+    Snapshots are named ``duckdb/DD-MM-YYYY_HHMMSS.duckdb`` by
+    :func:`upload_database_to_azure`, so the newest one is selected by parsing
+    that timestamp rather than relying on blob metadata.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+
+    Returns
+    -------
+    str or None
+        Name of the newest snapshot blob, or None if Azure Storage is disabled
+        or no snapshots exist.
+
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+
+    if not is_azure_storage_enabled():
+        return None
+
+    blob_names = list_azure_storage_blobs(prefix=DUCKDB_BLOB_PREFIX)
+    if not blob_names:
+        return None
+
+    dated_blobs = []
+    for blob_name in blob_names:
+        if not blob_name.lower().endswith(".duckdb"):
+            continue
+        timestamp = _parse_duckdb_blob_timestamp(blob_name)
+        if timestamp is not None:
+            dated_blobs.append((timestamp, blob_name))
+
+    if not dated_blobs:
+        return None
+
+    return max(dated_blobs)[1]
+
+
+def download_database_from_azure(config: dict, db_path: Optional[str | Path] = None) -> Optional[Path]:
+    """Restore the most recent DuckDB snapshot from Azure Blob Storage.
+
+    The import job runs in a stateless container, so the database must be
+    restored before any workout filtering or importing happens. Without it every
+    run would start from an empty database and re-import every workout.
+
+    Parameters
+    ----------
+    config : dict
+        Configuration dictionary from load_configuration()
+    db_path : str, Path, or None (optional)
+        Destination path for the database file. If None, uses config['DUCKDB_PATH'].
+
+    Returns
+    -------
+    Path or None
+        Path to the restored database file, or None when Azure Storage is
+        disabled, no snapshot exists, or the download failed.
+
+    Raises
+    ------
+    ValueError
+        If config is None
+    """
+    if config is None:
+        raise ValueError("config parameter is required and cannot be None")
+
+    if not is_azure_storage_enabled():
+        print("ℹ️  Azure Storage is disabled — skipping DuckDB restore")
+        return None
+
+    print(f"\n------------------------------------------------------")
+    print("Restoring database from Azure Blob Storage...")
+    print(f"------------------------------------------------------\n")
+
+    if db_path is None:
+        db_path = Path(config['DUCKDB_PATH'])
+    else:
+        db_path = Path(db_path)
+
+    try:
+        latest_blob = get_latest_duckdb_blob_name(config)
+    except Exception as e:
+        print(f"❌ Failed to list DuckDB snapshots: {e}")
+        return None
+
+    if latest_blob is None:
+        print("ℹ️  No DuckDB snapshot found in Azure — starting from a fresh database")
+        return None
+
+    try:
+        restored_path = download_file_from_azure_storage(latest_blob, db_path)
+    except Exception as e:
+        print(f"❌ Failed to restore database: {e}")
+        return None
+
+    if restored_path is None:
+        print(f"⚠️  Snapshot {latest_blob} could not be downloaded")
+        return None
+
+    size_mb = restored_path.stat().st_size / (1024 * 1024)
+    print(f"✅ Restored {latest_blob} ({size_mb:.1f} MB) to {restored_path}")
+    return restored_path
+
+
 __all__ = [
     # HR Zones functions
     'ensure_hr_zones_table',
@@ -856,6 +992,8 @@ __all__ = [
     'import_workout_from_directory',
     'calculate_and_import_calories',
     'upload_database_to_azure',
+    'download_database_from_azure',
+    'get_latest_duckdb_blob_name',
     
     # User info database functions
     'ensure_userinfo_table',

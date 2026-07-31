@@ -185,6 +185,59 @@ def upload_file_to_azure_storage(
         raise
 
 
+def download_file_from_azure_storage(
+    blob_name: str,
+    destination_path: Path,
+    container_name: Optional[str] = None
+) -> Optional[Path]:
+    """Download a blob from Azure Blob Storage to a local file.
+
+    Args:
+        blob_name: Name of the blob to download
+        destination_path: Local path to write the blob to (parents are created)
+        container_name: Container name (default: from AZURE_STORAGE_CONTAINER_NAME)
+
+    Returns:
+        Path to the downloaded file, or None if Azure Storage is disabled or the
+        blob does not exist.
+
+    Raises:
+        ValueError: If Azure Storage is not properly configured
+    """
+    if not is_azure_storage_enabled():
+        print("⚠️ Azure Storage is disabled. Set AZURE_STORAGE_ENABLED=true to enable.")
+        return None
+
+    config = get_azure_storage_config()
+
+    if container_name is None:
+        container_name = config['container_name']
+
+    destination_path = Path(destination_path)
+
+    try:
+        blob_service_client = get_blob_service_client()
+        container_client = blob_service_client.get_container_client(container_name)
+        blob_client = container_client.get_blob_client(blob_name)
+
+        if not blob_client.exists():
+            print(f"⚠️ Blob not found: {container_name}/{blob_name}")
+            return None
+
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+
+        print(f"📥 Downloading {blob_name} from Azure Blob Storage...")
+        with open(destination_path, 'wb') as file_handle:
+            blob_client.download_blob().readinto(file_handle)
+
+        print(f"✅ Downloaded to: {destination_path}")
+        return destination_path
+
+    except Exception as e:
+        print(f"❌ Failed to download from Azure Blob Storage: {e}")
+        raise
+
+
 def list_azure_storage_blobs(
     container_name: Optional[str] = None,
     prefix: str = "workouts/"
@@ -224,5 +277,6 @@ __all__ = [
     'get_azure_storage_config',
     'get_blob_service_client',
     'upload_file_to_azure_storage',
+    'download_file_from_azure_storage',
     'list_azure_storage_blobs',
 ]

@@ -3,12 +3,19 @@
 Automated Docker job that replicates the complete `polar_accesslink_workflow_v0.2` notebook:
 
 1. **OAuth & User Registration** — Validates tokens, registers with Polar API
-2. **Exercise Discovery** — Lists all exercises, filters new ones by database
-3. **Download & Convert** — Downloads TCX files, converts to Polar-compatible CSV
-4. **Azure Upload** — Uploads TCX + CSV files to Azure Blob Storage
-5. **Database Import** — Imports CSVs into DuckDB or PostgreSQL
-6. **DuckDB Upload** — Uploads DuckDB database to Azure (DuckDB mode only)
-7. **Cleanup** — Deletes processed TCX and CSV files
+2. **DuckDB Restore** — Downloads the latest DuckDB snapshot from Azure Blob Storage (DuckDB mode only)
+3. **Exercise Discovery** — Lists all exercises, filters new ones by database
+4. **Download & Convert** — Downloads TCX files, converts to Polar-compatible CSV
+5. **Azure Upload** — Uploads TCX + CSV files to Azure Blob Storage
+6. **Database Import** — Imports CSVs into DuckDB or PostgreSQL
+7. **DuckDB Upload** — Uploads DuckDB database to Azure (DuckDB mode only)
+8. **Cleanup** — Deletes processed TCX and CSV files
+
+> **Deployed configuration:** the Container Apps Job runs in **DuckDB mode**. The
+> database lives in Azure Blob Storage (account `muskulsa`, container
+> `workoutdata`, prefix `duckdb/`) and is restored at the start of every run and
+> re-uploaded as a new timestamped snapshot at the end. There is no PostgreSQL
+> server behind the deployed job.
 
 ## Setup
 
@@ -48,7 +55,7 @@ Automated Docker job that replicates the complete `polar_accesslink_workflow_v0.
 | `POLAR_TOKENS_FILE` | No | Path to token file (default: jobs/import/tokens_polar.json) |
 | `DUCKDB_PATH` | No | Path to DuckDB file (default: local_data/database_v2.duckdb) |
 | `OUTPUT_DIR` | No | Output directory (default: local_data) |
-| `AZURE_STORAGE_ENABLED` | No | Enable Azure upload (default: false) |
+| `AZURE_STORAGE_ENABLED` | No | Enable Azure upload + DuckDB snapshot restore (default: false) |
 | `AZURE_STORAGE_ACCOUNT_NAME` | If Azure | Storage account name |
 | `AZURE_STORAGE_CONTAINER_NAME` | No | Container name (default: workout-data) |
 | `POSTGRES_HOST` | If postgres | PostgreSQL hostname |
@@ -78,6 +85,10 @@ docker compose up
 - Set `DATABASE_TYPE=duckdb` in `.env`
 - DuckDB file is stored in `local_data/` (volume-mounted into container)
 - Downloaded files (TCX/CSV) are also saved to `local_data/`
+- When `AZURE_STORAGE_ENABLED=true`, the newest `duckdb/*.duckdb` snapshot is
+  downloaded before the run and a new snapshot is uploaded afterwards. This is
+  what makes the stateless Container Apps Job resume from the previous run
+  instead of re-importing every workout.
 
 **PostgreSQL (remote):**
 - Set `DATABASE_TYPE=postgres` in `.env`

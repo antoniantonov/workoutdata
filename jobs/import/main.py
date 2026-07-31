@@ -2,12 +2,13 @@
 
 Replicates the complete workflow from notebooks/polar_accesslink_workflow_v0.2.md:
 1. OAuth token validation / authorization
-2. Register user with Polar API
-3. List exercises, filter new ones (database-based deduplication)
-4. Download new exercises as TCX, convert to CSV, upload to Azure
-5. Import CSVs into the configured database (DuckDB or PostgreSQL)
-6. Upload DuckDB database to Azure (DuckDB mode only)
-7. Cleanup processed TCX and CSV files
+2. Restore the DuckDB database from Azure Blob Storage (DuckDB mode only)
+3. Register user with Polar API
+4. List exercises, filter new ones (database-based deduplication)
+5. Download new exercises as TCX, convert to CSV, upload to Azure
+6. Import CSVs into the configured database (DuckDB or PostgreSQL)
+7. Upload DuckDB database to Azure (DuckDB mode only)
+8. Cleanup processed TCX and CSV files
 
 Configuration is loaded from environment variables (via .env file).
 OAuth tokens are read from tokens_polar.json or environment variables.
@@ -47,8 +48,21 @@ def main():
         sys.exit(1)
     print()
 
-    # ── Step 2: Run the Polar workflow (with retries for transient errors) ─
-    print("Step 2: Running Polar AccessLink workflow...")
+    db_type = config.get('DATABASE_TYPE', 'duckdb')
+
+    # ── Step 2: Restore the DuckDB database from Azure ──────────────────
+    # The container is stateless, so without this the database would be empty
+    # and every exercise would look new.
+    if db_type == 'duckdb':
+        print("Step 2: Restoring DuckDB database from Azure...")
+        try:
+            duckdb_storage.download_database_from_azure(config)
+        except Exception as e:
+            print(f"⚠️  WARNING: DuckDB restore from Azure failed: {e}")
+        print()
+
+    # ── Step 3: Run the Polar workflow (with retries for transient errors) ─
+    print("Step 3: Running Polar AccessLink workflow...")
     result = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -70,11 +84,10 @@ def main():
         print("=" * 80)
         sys.exit(0)
 
-    # ── Step 3: Import CSVs into the database ───────────────────────────
-    db_type = config.get('DATABASE_TYPE', 'duckdb')
+    # ── Step 4: Import CSVs into the database ───────────────────────────
     glob_patterns = ["Anton_Antonov*.CSV"]
 
-    print(f"\nStep 3: Importing CSVs into {db_type.upper()} database...")
+    print(f"\nStep 4: Importing CSVs into {db_type.upper()} database...")
     print("-" * 60)
 
     try:
@@ -91,16 +104,16 @@ def main():
         print(f"❌ ERROR: Database import failed: {e}")
         sys.exit(1)
 
-    # ── Step 4: Upload DuckDB to Azure (DuckDB mode only) ──────────────
+    # ── Step 5: Upload DuckDB to Azure (DuckDB mode only) ──────────────
     if db_type == 'duckdb':
-        print("\nStep 4: Uploading DuckDB database to Azure...")
+        print("\nStep 5: Uploading DuckDB database to Azure...")
         try:
             duckdb_storage.upload_database_to_azure(config)
         except Exception as e:
             print(f"⚠️  WARNING: DuckDB upload to Azure failed: {e}")
 
-    # ── Step 5: Cleanup processed files ─────────────────────────────────
-    print("\nStep 5: Cleaning up processed files...")
+    # ── Step 6: Cleanup processed files ─────────────────────────────────
+    print("\nStep 6: Cleaning up processed files...")
     print("-" * 60)
 
     deletion_patterns = ["*.CSV", "*.tcx"]
@@ -120,6 +133,7 @@ def main():
     print(f"  - Database type: {db_type.upper()}")
     print(f"  - New CSVs processed: {len(processed_csv_files)}")
     if db_type == 'duckdb':
+        print(f"  - DuckDB restored from Azure: yes (if a snapshot existed)")
         print(f"  - DuckDB uploaded to Azure: yes (if enabled)")
     print(f"  - Files cleaned up: yes")
     print("=" * 80)

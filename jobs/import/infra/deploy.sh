@@ -14,8 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 INFRA_DIR="$SCRIPT_DIR"
 
-ACR_NAME="humandcoded2"
-ACR_LOGIN_SERVER="humandcoded2.azurecr.io"
+ACR_NAME="muskulacr"
+ACR_LOGIN_SERVER="muskulacr.azurecr.io"
 IMAGE_NAME="polar-import-job"
 STACK_NAME="prod"
 

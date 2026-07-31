@@ -1,27 +1,28 @@
 """Pulumi program to deploy the Polar import job as an Azure Container Apps Job.
 
 Resources deployed:
+- Azure Container Registry (ACR)
 - User Assigned Managed Identity (UAMI)
 - Role assignments (ACR Pull, Storage Blob Data Contributor)
-- PostgreSQL Entra ID administrator for UAMI
 - Log Analytics Workspace
 - Container Apps Environment
 - Container Apps Job (daily cron schedule)
 
 Existing resources referenced:
 - Resource Group: muskul.ai (East US)
-- ACR: humandcoded2 (in humandcoded RG)
 - Storage Account: muskulsa (in muskul.ai RG)
-- PostgreSQL Server: humandcoded-pg (in humandcoded RG)
+
+The job runs in DuckDB mode: the database is restored from, and uploaded back to,
+Azure Blob Storage on the muskulsa account under the `duckdb/` prefix.
 """
 import pulumi
 import pulumi_azure_native as azure_native
 from pulumi_azure_native import (
     managedidentity,
     authorization,
+    containerregistry,
     operationalinsights,
     app,
-    dbforpostgresql,
     network,
 )
 import pulumi_command as command
@@ -29,19 +30,16 @@ import pulumi_command as command
 config = pulumi.Config()
 
 # =============================================================================
-# Constants for existing resources
+# Constants
 # =============================================================================
 RESOURCE_GROUP_NAME = "muskul.ai"
 LOCATION = "eastus"
 
-ACR_NAME = "humandcoded2"
-ACR_RESOURCE_GROUP = "humandcoded"
-ACR_LOGIN_SERVER = "humandcoded2.azurecr.io"
+ACR_NAME = "muskulacr"
+ACR_LOGIN_SERVER = f"{ACR_NAME}.azurecr.io"
+IMAGE_REPOSITORY = "polar-import-job"
 
 STORAGE_ACCOUNT_NAME = "muskulsa"
-
-PG_SERVER_NAME = "humandcoded-pg"
-PG_RESOURCE_GROUP = "humandcoded"
 
 # =============================================================================
 # Look up existing resources
@@ -53,19 +51,25 @@ subscription_id = current.subscription_id
 ROLE_ACR_PULL = f"/subscriptions/{subscription_id}/providers/Microsoft.Authorization/roleDefinitions/7f951dda-4ed3-4680-a7ca-43fe172d538d"
 ROLE_STORAGE_BLOB_DATA_CONTRIBUTOR = f"/subscriptions/{subscription_id}/providers/Microsoft.Authorization/roleDefinitions/ba92f5b4-2d11-453d-a403-e96b0029c9fe"
 
-acr = azure_native.containerregistry.get_registry(
-    registry_name=ACR_NAME,
-    resource_group_name=ACR_RESOURCE_GROUP,
-)
-
 storage_account = azure_native.storage.get_storage_account(
     account_name=STORAGE_ACCOUNT_NAME,
     resource_group_name=RESOURCE_GROUP_NAME,
 )
 
-pg_server = azure_native.dbforpostgresql.get_server(
-    server_name=PG_SERVER_NAME,
-    resource_group_name=PG_RESOURCE_GROUP,
+# =============================================================================
+# Azure Container Registry
+# Hosts the polar-import-job image. Images are pushed by the
+# "Import Job - Build and Publish" GitHub Actions workflow.
+# =============================================================================
+acr = containerregistry.Registry(
+    "import-job-acr",
+    registry_name=ACR_NAME,
+    resource_group_name=RESOURCE_GROUP_NAME,
+    location=LOCATION,
+    sku=containerregistry.SkuArgs(name="Basic"),
+    # Pulls use the UAMI via AcrPull; pushes use the GitHub OIDC identity.
+    admin_user_enabled=False,
+    tags={"purpose": "polar-import-job"},
 )
 
 # =============================================================================
@@ -83,7 +87,7 @@ uami = managedidentity.UserAssignedIdentity(
 # Role Assignments
 # =============================================================================
 
-# ACR Pull — allows the UAMI to pull images from the existing ACR
+# ACR Pull — allows the UAMI to pull images from the ACR
 acr_pull_role = authorization.RoleAssignment(
     "acr-pull-role",
     principal_id=uami.principal_id,
@@ -99,34 +103,6 @@ storage_role = authorization.RoleAssignment(
     principal_type=authorization.PrincipalType.SERVICE_PRINCIPAL,
     role_definition_id=ROLE_STORAGE_BLOB_DATA_CONTRIBUTOR,
     scope=storage_account.id,
-)
-
-# =============================================================================
-# PostgreSQL Entra ID Administrator for UAMI
-# Note: The job currently uses password auth. This prepares for future
-# migration to Entra ID (managed identity) auth for PostgreSQL.
-# =============================================================================
-pg_admin = dbforpostgresql.Administrator(
-    "pg-uami-admin",
-    server_name=PG_SERVER_NAME,
-    resource_group_name=PG_RESOURCE_GROUP,
-    principal_type=dbforpostgresql.PrincipalType.SERVICE_PRINCIPAL,
-    principal_name=uami.name,
-    object_id=uami.principal_id,
-    tenant_id=current.tenant_id,
-)
-
-# =============================================================================
-# PostgreSQL Firewall Rule — Allow Azure Services
-# Allows the Container Apps Job (and other Azure services) to connect to PG.
-# =============================================================================
-pg_firewall_azure = dbforpostgresql.FirewallRule(
-    "pg-allow-azure-services",
-    server_name=PG_SERVER_NAME,
-    resource_group_name=PG_RESOURCE_GROUP,
-    firewall_rule_name="AllowAllAzureServicesAndResourcesWithinAzureIps",
-    start_ip_address="0.0.0.0",
-    end_ip_address="0.0.0.0",
 )
 
 # =============================================================================
@@ -264,12 +240,7 @@ polar_client_secret = config.require_secret("polar-client-secret")
 polar_redirect_port = config.get("polar-redirect-port") or "5001"
 polar_member_id = config.require("polar-member-id")
 
-database_type = config.get("database-type") or "postgres"
-postgres_host = config.require("postgres-host")
-postgres_port = config.get("postgres-port") or "5432"
-postgres_database = config.get("postgres-database") or "workoutdata"
-postgres_user = config.require("postgres-user")
-postgres_password = config.require_secret("postgres-password")
+database_type = config.get("database-type") or "duckdb"
 
 azure_storage_account = config.get("azure-storage-account") or STORAGE_ACCOUNT_NAME
 azure_storage_container = config.get("azure-storage-container") or "workoutdata"
@@ -279,9 +250,12 @@ token_type = config.get("token-type") or "bearer"
 
 # Image tag resolution: mirrors the logic in .github/workflows/import-job-deploy.yml.
 # If `image-tag` is set in Pulumi config we honor it; otherwise we ask ACR for
-# the most-recent non-`latest` tag in the polar-import-job repository.
+# the most-recent versioned tag in the polar-import-job repository.
 # We shell out to `az acr` because tag listing is a data-plane operation that
 # pulumi_azure_native does not expose.
+# Only `1.0.YYMMDD.N` tags are deployable — this skips `latest` and `buildcache`
+# (the build workflow's Docker layer cache, pushed after the image and not
+# pullable as one).
 configured_image_tag = config.get("image-tag")
 
 if configured_image_tag:
@@ -294,23 +268,24 @@ else:
             f"set -euo pipefail; "
             f"TAG=$(az acr repository show-tags "
             f"--name {ACR_NAME} "
-            f"--repository polar-import-job "
+            f"--repository {IMAGE_REPOSITORY} "
             f"--orderby time_desc --top 50 -o tsv "
-            f"| grep -v '^latest$' | head -n 1); "
+            f"| grep -E '^[0-9]+\\.[0-9]+\\.[0-9]{{6}}\\.[0-9]+$' | head -n 1); "
             f"if [ -z \"$TAG\" ]; then "
-            f"  echo 'No deployable image tags found in ACR repository polar-import-job.' >&2; "
+            f"  echo 'No deployable image tags found in ACR repository {IMAGE_REPOSITORY}.' >&2; "
             f"  exit 1; "
             f"fi; "
             f"printf '%s' \"$TAG\""
         ),
         # Re-run on every `pulumi up` so we always pick up the latest tag.
         triggers=[str(_time.time())],
+        opts=pulumi.ResourceOptions(depends_on=[acr]),
     )
     image_tag = _latest_tag_lookup.stdout.apply(lambda s: s.strip())
 
 cron_schedule = config.get("cron-schedule") or "0 6 * * *"
 
-image_name = pulumi.Output.concat(f"{ACR_LOGIN_SERVER}/polar-import-job:", image_tag)
+image_name = pulumi.Output.concat(f"{ACR_LOGIN_SERVER}/{IMAGE_REPOSITORY}:", image_tag)
 
 # =============================================================================
 # Container Apps Job
@@ -338,7 +313,6 @@ container_job = app.Job(
         ],
         secrets=[
             app.SecretArgs(name="polar-client-secret", value=polar_client_secret),
-            app.SecretArgs(name="postgres-password", value=postgres_password),
             app.SecretArgs(name="access-token", value=access_token),
         ],
     ),
@@ -361,11 +335,6 @@ container_job = app.Job(
 
                     # Database config
                     app.EnvironmentVarArgs(name="DATABASE_TYPE", value=database_type),
-                    app.EnvironmentVarArgs(name="POSTGRES_HOST", value=postgres_host),
-                    app.EnvironmentVarArgs(name="POSTGRES_PORT", value=postgres_port),
-                    app.EnvironmentVarArgs(name="POSTGRES_DATABASE", value=postgres_database),
-                    app.EnvironmentVarArgs(name="POSTGRES_USER", value=postgres_user),
-                    app.EnvironmentVarArgs(name="POSTGRES_PASSWORD", secret_ref="postgres-password"),
 
                     # Azure Storage config
                     app.EnvironmentVarArgs(name="AZURE_STORAGE_ENABLED", value="true"),
@@ -415,7 +384,8 @@ pulumi.export("uami_client_id", uami.client_id)
 pulumi.export("container_job_name", container_job.name)
 pulumi.export("container_env_name", container_env.name)
 pulumi.export("image", image_name)
-pulumi.export("acr_login_server", ACR_LOGIN_SERVER)
+pulumi.export("acr_name", acr.name)
+pulumi.export("acr_login_server", acr.login_server)
 pulumi.export("cron_schedule", cron_schedule)
 pulumi.export("vnet_name", vnet.name)
 pulumi.export("aca_subnet_id", aca_subnet.id)

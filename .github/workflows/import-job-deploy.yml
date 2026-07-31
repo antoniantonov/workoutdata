@@ -21,8 +21,8 @@ permissions:
   contents: read
 
 env:
-  ACR_NAME: humandcoded2
-  ACR_LOGIN_SERVER: humandcoded2.azurecr.io
+  ACR_NAME: muskulacr
+  ACR_LOGIN_SERVER: muskulacr.azurecr.io
   IMAGE_REPOSITORY: polar-import-job
   RESOURCE_GROUP: muskul.ai
   JOB_NAME: polar-import-job
@@ -52,20 +52,25 @@ jobs:
             IMAGE_TAG="${OVERRIDE}"
             echo "Using override image tag: ${IMAGE_TAG}"
           else
-            # Most-recent non-`latest` tag, ordered by push time (descending).
+            # Most-recent versioned tag, ordered by push time (descending).
+            # Only `1.0.YYMMDD.N` tags are deployable: this skips `latest` and,
+            # importantly, `buildcache` — the build workflow writes its Docker
+            # layer cache into this same repository and that manifest is pushed
+            # *after* the image, so a plain "newest tag" would resolve to a
+            # cache manifest that cannot be pulled as an image.
             IMAGE_TAG=$(az acr repository show-tags \
               --name "${ACR_NAME}" \
               --repository "${IMAGE_REPOSITORY}" \
               --orderby time_desc \
               --top 50 \
               -o tsv \
-              | grep -v '^latest$' \
+              | grep -E '^[0-9]+\.[0-9]+\.[0-9]{6}\.[0-9]+$' \
               | head -n 1)
             if [ -z "${IMAGE_TAG}" ]; then
               echo "::error::No deployable image tags found in ACR repository ${IMAGE_REPOSITORY}."
               exit 1
             fi
-            echo "Resolved latest non-'latest' tag from ACR: ${IMAGE_TAG}"
+            echo "Resolved latest versioned tag from ACR: ${IMAGE_TAG}"
           fi
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
           echo "image=${ACR_LOGIN_SERVER}/${IMAGE_REPOSITORY}:${IMAGE_TAG}" >> "$GITHUB_OUTPUT"

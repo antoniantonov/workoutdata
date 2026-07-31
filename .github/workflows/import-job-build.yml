@@ -17,14 +17,18 @@ permissions:
   contents: read
 
 env:
-  ACR_NAME: humandcoded2
-  ACR_LOGIN_SERVER: humandcoded2.azurecr.io
+  ACR_NAME: muskulacr
+  ACR_LOGIN_SERVER: muskulacr.azurecr.io
   IMAGE_REPOSITORY: polar-import-job
 
 jobs:
   build-and-push:
     name: Build & push image
     runs-on: ubuntu-latest
+    # Required so the OIDC subject is `environment:production`, which is the
+    # federated credential that works from any branch (per-branch credentials
+    # only exist for `master` and tags).
+    environment: production
     outputs:
       image_tag: ${{ steps.tag.outputs.image_tag }}
     steps:

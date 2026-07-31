@@ -250,9 +250,12 @@ token_type = config.get("token-type") or "bearer"
 
 # Image tag resolution: mirrors the logic in .github/workflows/import-job-deploy.yml.
 # If `image-tag` is set in Pulumi config we honor it; otherwise we ask ACR for
-# the most-recent non-`latest` tag in the polar-import-job repository.
+# the most-recent versioned tag in the polar-import-job repository.
 # We shell out to `az acr` because tag listing is a data-plane operation that
 # pulumi_azure_native does not expose.
+# Only `1.0.YYMMDD.N` tags are deployable — this skips `latest` and `buildcache`
+# (the build workflow's Docker layer cache, pushed after the image and not
+# pullable as one).
 configured_image_tag = config.get("image-tag")
 
 if configured_image_tag:
@@ -267,7 +270,7 @@ else:
             f"--name {ACR_NAME} "
             f"--repository {IMAGE_REPOSITORY} "
             f"--orderby time_desc --top 50 -o tsv "
-            f"| grep -v '^latest$' | head -n 1); "
+            f"| grep -E '^[0-9]+\\.[0-9]+\\.[0-9]{{6}}\\.[0-9]+$' | head -n 1); "
             f"if [ -z \"$TAG\" ]; then "
             f"  echo 'No deployable image tags found in ACR repository {IMAGE_REPOSITORY}.' >&2; "
             f"  exit 1; "

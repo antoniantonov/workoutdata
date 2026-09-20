@@ -7,8 +7,8 @@ available, and invokes ``garmindb_cli.py -f <config_dir> --all --download
 --import`` so the SQLite databases are rebuilt in place.
 
 ``garmindb`` is imported lazily / only required here, so the default
-transform-only path has no dependency on it. This phase is best-effort: callers
-should fall back to existing SQLite databases on failure.
+transform-only path has no dependency on it. The caller decides whether a
+download failure is fatal through ``GARMIN_DOWNLOAD_REQUIRED``.
 """
 from __future__ import annotations
 
@@ -91,12 +91,13 @@ def _read_session_token(session_file: Path):
         return None
 
 
-def _validate_session_token(session_file: Path) -> None:
-    """Fail fast if the garth session's refresh token is already expired.
+def _warn_on_expired_oauth2_metadata(session_file: Path) -> None:
+    """Warn when OAuth2 refresh metadata is stale, then let garth try renewal.
 
-    garth can refresh an expired *access* token, but once the *refresh* token
-    expires a full interactive re-login (with MFA) is required — which cannot
-    happen inside the container. Detect that up front with a clear message.
+    In garth 0.6.3, an expired OAuth2 token can be re-minted from the persisted
+    OAuth1 token. ``refresh_token_expires_at`` is therefore not a definitive
+    session-expiry signal. GarminDB performs the real authenticated API check,
+    and its output is scanned below for login failures.
     """
     import time
 
@@ -119,37 +120,36 @@ def _validate_session_token(session_file: Path) -> None:
         from datetime import datetime
 
         expired_on = datetime.fromtimestamp(refresh_exp).strftime("%Y-%m-%d %H:%M:%S")
-        raise RuntimeError(
-            f"Garmin garth session is expired (refresh token expired {expired_on}). "
-            "Generate a new token on the host with './scripts/renew_garmin_token.sh' (prompts "
-            "for Garmin login + MFA and writes ~/.GarminDb/garth_session), then re-run "
-            f"this job. Token file: {session_file}"
+        print(
+            "  WARNING: OAuth2 refresh metadata expired "
+            f"{expired_on}; attempting garth OAuth1 session renewal. "
+            "If Garmin rejects the session, renew it with "
+            "'docker compose run --rm garmin-auth'."
         )
 
 
 def _ensure_session_token(config_dir: Path) -> Path:
     """Ensure a garth_session token exists in the config dir; return its path.
 
-    The host token (``~/.GarminDb/garth_session``) is the source of truth: when it
-    exists, the config-dir copy is **refreshed** from it on every run so a freshly
-    renewed token is always used (a stale cached copy in the config dir — e.g. left
-    by a previous run on the mounted volume — must never win).
+    The configured token is the source of truth. A token under
+    ``~/.GarminDb/garth_session`` is accepted only as a backwards-compatible
+    fallback when the configured path is empty.
     """
     session_file = config_dir / "garth_session"
     host_session = Path(os.path.expanduser("~")) / ".GarminDb" / "garth_session"
 
-    if host_session.exists() and host_session.resolve() != session_file.resolve():
-        shutil.copy2(host_session, session_file)
-        print(f"  Refreshed garth_session from {host_session}")
-        return session_file
-
     if session_file.exists():
         return session_file
 
+    if host_session.exists() and host_session.resolve() != session_file.resolve():
+        shutil.copy2(host_session, session_file)
+        print(f"  Copied legacy garth_session from {host_session}")
+        return session_file
+
     raise FileNotFoundError(
-        "No garth_session token found. Generate one with the helper script on the "
-        f"host: './scripts/renew_garmin_token.sh' (writes ~/.GarminDb/garth_session), or place "
-        f"a valid token at {session_file}."
+        "No garth_session token found. Generate one inside Docker with "
+        "'docker compose run --rm garmin-auth', or provide a valid token at "
+        f"{session_file}."
     )
 
 
@@ -178,9 +178,10 @@ _FAILURE_MARKERS = (
 def run_download(config: dict) -> bool:
     """Run the GarminDB download+import phase. Returns True on success.
 
-    Raises on misconfiguration (missing/expired token). Returns False if the CLI
-    fails (non-zero exit OR an authentication failure marker in its output), so
-    the caller can decide whether to abort or fall back to existing databases.
+    Raises on misconfiguration (for example, a missing token). Returns False if
+    the CLI fails (non-zero exit OR an authentication failure marker in its
+    output), so the caller can decide whether to abort or fall back to existing
+    databases.
     """
     try:
         import garmindb  # noqa: F401  (presence check; lazy)
@@ -199,7 +200,7 @@ def run_download(config: dict) -> bool:
     print(f"  Wrote GarminDB config: {config_file}")
 
     session_file = _ensure_session_token(config_dir)
-    _validate_session_token(session_file)  # fail fast on an expired refresh token
+    _warn_on_expired_oauth2_metadata(session_file)
 
     cmd = _find_cli() + ["-f", str(config_dir), "--all", "--download", "--import"]
     if config.get("GARMIN_DOWNLOAD_LATEST", True):
@@ -228,7 +229,7 @@ def run_download(config: dict) -> bool:
         print(
             f"  ❌ GarminDB download failed: detected '{failure_marker}' in CLI output "
             "(garmindb_cli returns 0 even on auth failure). The garth session is likely "
-            "expired — regenerate it (Garmin login + MFA) and re-run."
+            "unusable — renew it with 'docker compose run --rm garmin-auth' and re-run."
         )
         return False
 
@@ -236,4 +237,20 @@ def run_download(config: dict) -> bool:
     return True
 
 
-__all__ = ["run_download"]
+def main() -> int:
+    """Run the live Garmin source refresh as a standalone container command."""
+    from garmin_etl.config import load_garmin_configuration
+
+    try:
+        config = load_garmin_configuration()
+        return 0 if run_download(config) else 1
+    except Exception as exc:  # noqa: BLE001 - CLI boundary reports the actionable error
+        print(f"ERROR: Garmin source refresh failed: {exc}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+__all__ = ["run_download", "main"]

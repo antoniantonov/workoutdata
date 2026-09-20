@@ -1,8 +1,9 @@
 # Query notebook — explicitly excluded from the image (per requirement).
 notebooks/
 
-# Token-renewal helpers — host-only utilities, excluded from the image.
+# Host Docker launchers and tests are not needed inside the image.
 scripts/
+tests/
 
 # Runtime data + secrets (mounted/injected at runtime, never baked in).
 local_data/

@@ -3,7 +3,8 @@
 Workflow:
 1. Load configuration (DATABASE_TYPE switch, paths, toggles).
 2. (Optional) Download phase — refresh GarminDB SQLite via the GarminDB CLI
-   (only when GARMIN_DOWNLOAD=true; best-effort, falls back to existing DBs).
+   (only when GARMIN_DOWNLOAD=true; failure behavior is controlled by
+   GARMIN_DOWNLOAD_REQUIRED).
 3. Transform — read GarminDB SQLite into clean DataFrames (workout metadata with
    workoutId + first GPS, per-second timeseries, daily sleep).
 4. Load — upsert into DuckDB or PostgreSQL based on DATABASE_TYPE.

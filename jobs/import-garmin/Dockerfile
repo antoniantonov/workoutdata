@@ -1,7 +1,7 @@
 # Dockerfile for the Garmin Import Job.
 # Transforms GarminDB SQLite data into DuckDB / PostgreSQL (garmin_ tables).
-# The optional live-download phase (GARMIN_DOWNLOAD=true) additionally needs the
-# 'download' extra (garmindb); enable it by switching the uv sync line below.
+# The live-download and Dockerized authentication commands require the
+# 'download' extra (garmindb + garth).
 
 FROM python:3.14-slim
 
@@ -18,10 +18,12 @@ WORKDIR /app
 # Copy the self-contained job (build context = this job directory).
 COPY . /app
 
-# Install dependencies. The 'download' extra (garmindb) is required for the live
-# download phase (GARMIN_DOWNLOAD=true). For transform-only, you may drop it:
-#   RUN uv sync --no-dev
+# Install all runtime dependencies, including live download/authentication.
 RUN uv sync --no-dev --extra download
+
+# Cache the DuckDB UI extension in the image so the UI service has no
+# extension-download dependency at startup.
+RUN uv run python -c "import duckdb; duckdb.connect().execute('INSTALL ui')"
 
 # Ensure logs stream straight to the container output.
 ENV PYTHONUNBUFFERED=1

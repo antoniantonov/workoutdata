@@ -1,18 +1,187 @@
+x-import-environment: &import-environment
+  IN_CONTAINER: "true"
+  GARMIN_CONFIG_DIR: /app/local_data/.GarminDb
+  GARMIN_BASE_DIR: /app/local_data/garmin_sqlite
+  GARMIN_DB_DIR: /app/local_data/garmin_sqlite/DBs
+  GARMIN_DUCKDB_PATH: /app/local_data/garmin.duckdb
+
+x-import-service: &import-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: workoutdata/import-garmin:local
+  env_file:
+    - .env
+  volumes:
+    - ./local_data:/app/local_data
+
 services:
-  import-garmin:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: garmin-import-job
-    env_file:
-      - .env
-    volumes:
-      # DuckDB output + GarminDB SQLite input live under local_data.
-      - ./local_data:/app/local_data
-      # Only needed when GARMIN_DOWNLOAD=true: mount the garth session + config.
-      # The download phase writes its own GarminConnectConfig.json under
-      # local_data/.GarminDb and reuses the garth_session token found there or
-      # copied from this mount.
-      - ~/.GarminDb:/root/.GarminDb
+  garmin-auth:
+    <<: *import-service
+    profiles: ["auth"]
+    stdin_open: true
+    tty: true
     environment:
-      - IN_CONTAINER=true
+      <<: *import-environment
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.auth
+
+  refresh-garmin-source:
+    <<: *import-service
+    profiles: ["source"]
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: duckdb
+      GARMIN_DOWNLOAD: "true"
+      GARMIN_DOWNLOAD_REQUIRED: "true"
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.download
+
+  import-garmin-duckdb:
+    <<: *import-service
+    profiles: ["duckdb"]
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: duckdb
+      GARMIN_DOWNLOAD: "false"
+
+  postgres:
+    image: postgres:17.2-alpine
+    profiles: ["postgres", "tools"]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-garmin}
+      POSTGRES_USER: ${POSTGRES_USER:-garmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:${GARMIN_POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - ./local_data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  import-garmin-postgres:
+    <<: *import-service
+    profiles: ["postgres"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: postgres
+      GARMIN_DOWNLOAD: "false"
+      POSTGRES_CONNECTION_STRING: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-garmin}
+      POSTGRES_USER: ${POSTGRES_USER:-garmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
+      POSTGRES_SSLMODE: disable
+
+  query-duckdb:
+    <<: *import-service
+    profiles: ["tools"]
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: duckdb
+      GARMIN_DOWNLOAD: "false"
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.query
+      - --backend
+      - duckdb
+
+  duckdb-ui:
+    <<: *import-service
+    profiles: ["duckdb-ui"]
+    restart: unless-stopped
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: duckdb
+      GARMIN_DOWNLOAD: "false"
+      DUCKDB_UI_LOCAL_PORT: "4213"
+      DUCKDB_UI_PROXY_PORT: "4214"
+    ports:
+      - "127.0.0.1:${GARMIN_DUCKDB_UI_PORT:-4213}:4214"
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.ui
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - curl --fail --silent http://127.0.0.1:4214/ >/dev/null || exit 1
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  query-postgres:
+    <<: *import-service
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: postgres
+      GARMIN_DOWNLOAD: "false"
+      POSTGRES_CONNECTION_STRING: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-garmin}
+      POSTGRES_USER: ${POSTGRES_USER:-garmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
+      POSTGRES_SSLMODE: disable
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.query
+      - --backend
+      - postgres
+
+  validate-garmin:
+    <<: *import-service
+    profiles: ["tools"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: postgres
+      GARMIN_DOWNLOAD: "false"
+      POSTGRES_CONNECTION_STRING: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-garmin}
+      POSTGRES_USER: ${POSTGRES_USER:-garmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
+      POSTGRES_SSLMODE: disable
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.validate
+    command: ["--backend", "both"]

@@ -44,7 +44,24 @@ def main() -> None:
     else:
         from garmin_etl.storage import duckdb as storage
 
-    # ── Step 2: Optional download ───────────────────────────────────────────
+    # ── Online delta mode → shared coordinator ──────────────────────────────
+    # A manual `main.py` run with delta mode + downloads enabled routes to the
+    # same destination-aware coordinator the launcher's sync-garmin service uses.
+    # The legacy download-then-full-cache path is preserved for explicit legacy
+    # mode and for the transform-only import services (GARMIN_DOWNLOAD=false).
+    if config.get("GARMIN_IMPORT_MODE") == "delta" and config.get("GARMIN_DOWNLOAD"):
+        print("Delta mode + download enabled → running the destination-aware sync.")
+        print("-" * 60)
+        try:
+            from garmin_etl import sync
+
+            report = sync.run_from_config(config)
+        except Exception as exc:  # noqa: BLE001 - CLI boundary reports the actionable error
+            print(f"❌ ERROR: Garmin delta sync failed: {exc}")
+            sys.exit(1)
+        sys.exit(report.exit_code())
+
+    # ── Step 2: Optional download (legacy) ──────────────────────────────────
     if config["GARMIN_DOWNLOAD"]:
         print("Step 2: Downloading latest data from Garmin (GarminDB CLI)...")
         print("-" * 60)

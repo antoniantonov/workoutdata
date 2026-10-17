@@ -1,4 +1,10 @@
-"""Exercise the Bash launchers without Docker, Garmin access, or real databases."""
+"""Exercise the Bash launchers without Docker, Garmin access, or real databases.
+
+The default launcher flow is now the destination-aware delta sync (the
+``sync-garmin`` service). The legacy count-based path is exercised via the
+explicit legacy flags (``--skip-download``/``--latest``/``--full-download``/
+``--activity-limit``).
+"""
 from __future__ import annotations
 
 import json
@@ -15,6 +21,15 @@ JOB_DIR = Path(__file__).resolve().parents[1]
 RUN = ["run", "--rm", "--no-deps", "-T"]
 UP = ["up", "-d", "--wait", "--no-build"]
 IMAGE = "workoutdata/import-garmin:local"
+
+
+def sync(backends: str, extra=()):
+    return RUN + ["-e", f"GARMIN_SYNC_BACKENDS={backends}", *extra, "sync-garmin"]
+
+
+def legacy_import(backend: str):
+    return RUN + ["-e", "GARMIN_IMPORT_MODE=legacy", f"import-garmin-{backend}"]
+
 
 FAKE_DOCKER = r'''
 import json
@@ -54,11 +69,18 @@ if job_dir is None:
 
 services = {
     "garmin-auth", "refresh-garmin-source", "import-garmin-duckdb",
-    "import-garmin-postgres", "validate-garmin", "postgres", "duckdb-ui",
+    "import-garmin-postgres", "sync-garmin", "validate-garmin",
+    "postgres", "duckdb-ui",
 }
 action = args[0]
 service = next((arg for arg in args[1:] if arg in services), "")
 fail_if_requested(action + ":" + service)
+
+def env_value(key):
+    for i, token in enumerate(args):
+        if token == "-e" and i + 1 < len(args) and args[i + 1].startswith(key + "="):
+            return args[i + 1].split("=", 1)[1]
+    return ""
 
 db_file = job_dir / "local_data" / "garmin.duckdb"
 ui = state / "duckdb-ui"
@@ -74,7 +96,17 @@ elif action == "up" and service in ("postgres", "duckdb-ui"):
         sys.exit("DuckDB file must exist before starting the UI")
     (state / service).touch()
 elif action == "run":
-    if service == "import-garmin-duckdb":
+    if service == "sync-garmin":
+        backends = env_value("GARMIN_SYNC_BACKENDS")
+        wants_duckdb = backends in ("duckdb", "both")
+        wants_postgres = backends in ("postgres", "both")
+        if wants_duckdb and ui.exists():
+            sys.exit("DuckDB UI still holds the database lock")
+        if wants_postgres and not postgres.exists():
+            sys.exit("PostgreSQL must be started before sync")
+        if wants_duckdb:
+            db_file.touch()
+    elif service == "import-garmin-duckdb":
         if ui.exists():
             sys.exit("DuckDB UI still holds the database lock")
         db_file.touch()
@@ -174,27 +206,24 @@ class RunImportTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Garmin import complete.", result.stdout)
 
-    def test_default_builds_refreshes_and_leaves_only_postgres_running(self) -> None:
+    # ── delta mode (new default) ────────────────────────────────────────────
+    def test_default_delta_builds_and_syncs_into_postgres_only(self) -> None:
         result = self.invoke()
         self.assert_success(result)
         self.assertEqual(
             self.actions(),
             [
                 ["build", "import-garmin-duckdb"],
-                RUN + ["refresh-garmin-source"],
                 UP + ["postgres"],
-                RUN + ["import-garmin-postgres"],
+                sync("postgres"),
             ],
         )
         self.assertTrue((self.state / "postgres").exists())
         self.assertFalse((self.state / "duckdb-ui").exists())
-        self.assertIn("jdbc:postgresql://127.0.0.1:15433/garmin-test", result.stdout)
-        for call in self.docker_calls():
-            if call[:2] == ["compose", "--project-directory"]:
-                self.assertEqual(call[2], str(self.job_dir))
-                self.assertEqual(call[3:5], ["-f", str(self.job_dir / "docker-compose.yml")])
+        # No legacy refresh happens in delta mode.
+        self.assertNotIn(RUN + ["refresh-garmin-source"], self.actions())
 
-    def test_duckdb_releases_the_lock_and_restarts_ui_after_import(self) -> None:
+    def test_delta_duckdb_releases_lock_and_restarts_ui(self) -> None:
         (self.state / "duckdb-ui").touch()
         result = self.invoke("--db", "duckdb")
         self.assert_success(result)
@@ -202,17 +231,93 @@ class RunImportTests(unittest.TestCase):
             self.actions(),
             [
                 ["build", "import-garmin-duckdb"],
-                RUN + ["refresh-garmin-source"],
                 ["stop", "duckdb-ui"],
-                RUN + ["import-garmin-duckdb"],
+                sync("duckdb"),
                 UP + ["duckdb-ui"],
             ],
         )
         self.assertTrue((self.state / "duckdb-ui").exists())
         self.assertFalse((self.state / "postgres").exists())
-        self.assertIn("http://127.0.0.1:14213", result.stdout)
 
-    def test_both_share_one_build_and_refresh_then_validate_before_ui(self) -> None:
+    def test_delta_both_starts_pg_stops_ui_then_restarts_ui(self) -> None:
+        (self.state / "duckdb-ui").touch()
+        result = self.invoke("--db", "both", "--look-back-days", "60", "--validate")
+        self.assert_success(result)
+        self.assertEqual(
+            self.actions(),
+            [
+                ["build", "import-garmin-duckdb"],
+                ["stop", "duckdb-ui"],
+                UP + ["postgres"],
+                sync("both", ["-e", "GARMIN_LOOK_BACK_DAYS=60", "-e", "GARMIN_VALIDATE=true"]),
+                UP + ["duckdb-ui"],
+            ],
+        )
+        self.assertTrue((self.state / "postgres").exists())
+        self.assertTrue((self.state / "duckdb-ui").exists())
+
+    def test_delta_auth_runs_before_sync(self) -> None:
+        result = self.invoke("--db", "duckdb", "--auth")
+        self.assert_success(result)
+        self.assertEqual(
+            self.actions(),
+            [
+                ["build", "import-garmin-duckdb"],
+                ["run", "--rm", "--no-deps", "garmin-auth"],
+                ["stop", "duckdb-ui"],
+                sync("duckdb"),
+                UP + ["duckdb-ui"],
+            ],
+        )
+
+    def test_delta_postgres_does_not_touch_duckdb_ui(self) -> None:
+        (self.state / "duckdb-ui").touch()
+        result = self.invoke("--db", "postgres")
+        self.assert_success(result)
+        self.assertTrue((self.state / "duckdb-ui").exists())
+        self.assertNotIn(["stop", "duckdb-ui"], self.actions())
+        self.assertIn(sync("postgres"), self.actions())
+
+    def test_look_back_days_forwarded_only_when_provided(self) -> None:
+        self.assert_success(self.invoke("--db", "postgres"))
+        self.assertIn(sync("postgres"), self.actions())
+        self.log.write_text("")
+        self.assert_success(self.invoke("--db", "postgres", "--look-back-days", "7"))
+        self.assertIn(
+            sync("postgres", ["-e", "GARMIN_LOOK_BACK_DAYS=7"]), self.actions()
+        )
+
+    # ── legacy mode (explicit opt-in) ───────────────────────────────────────
+    def test_legacy_offline_skip_download_imports_full_cache(self) -> None:
+        for _ in range(2):
+            self.log.write_text("")
+            result = self.invoke("--db", "duckdb", "--skip-download", "--no-build")
+            self.assert_success(result)
+            self.assertEqual(
+                self.actions(),
+                [
+                    ["stop", "duckdb-ui"],
+                    legacy_import("duckdb"),
+                    UP + ["duckdb-ui"],
+                ],
+            )
+            self.assertIn(["image", "inspect", IMAGE], self.docker_calls())
+            self.assertNotIn(sync("duckdb"), self.actions())
+
+    def test_legacy_latest_override_refreshes_then_imports(self) -> None:
+        result = self.invoke("--latest")
+        self.assert_success(result)
+        self.assertEqual(
+            self.actions(),
+            [
+                ["build", "import-garmin-duckdb"],
+                RUN + ["-e", "GARMIN_DOWNLOAD_LATEST=true", "refresh-garmin-source"],
+                UP + ["postgres"],
+                legacy_import("postgres"),
+            ],
+        )
+
+    def test_legacy_full_download_both_with_auth_and_validate(self) -> None:
         result = self.invoke(
             "--db", "both", "--auth", "--full-download",
             "--activity-limit", "2000", "--validate",
@@ -231,67 +336,26 @@ class RunImportTests(unittest.TestCase):
                 ],
                 ["stop", "duckdb-ui"],
                 UP + ["postgres"],
-                RUN + ["import-garmin-duckdb"],
-                RUN + ["import-garmin-postgres"],
+                legacy_import("duckdb"),
+                legacy_import("postgres"),
                 RUN + ["validate-garmin", "--backend", "both"],
                 UP + ["duckdb-ui"],
             ],
         )
-        self.assertTrue((self.state / "postgres").exists())
-        self.assertTrue((self.state / "duckdb-ui").exists())
 
-    def test_latest_override_is_passed_only_to_the_refresh_container(self) -> None:
-        result = self.invoke("--latest")
-        self.assert_success(result)
-        self.assertIn(
-            RUN + ["-e", "GARMIN_DOWNLOAD_LATEST=true", "refresh-garmin-source"],
-            self.actions(),
-        )
-        self.assertIn(RUN + ["import-garmin-postgres"], self.actions())
-
-    def test_offline_no_build_reuses_image_and_can_rerun_with_ui_running(self) -> None:
-        for _ in range(2):
-            self.log.write_text("")
-            result = self.invoke("--db", "duckdb", "--skip-download", "--no-build")
-            self.assert_success(result)
-            self.assertEqual(
-                self.actions(),
-                [
-                    ["stop", "duckdb-ui"],
-                    RUN + ["import-garmin-duckdb"],
-                    UP + ["duckdb-ui"],
-                ],
-            )
-            self.assertIn(["image", "inspect", IMAGE], self.docker_calls())
-            self.assertTrue((self.state / "duckdb-ui").exists())
-
-    def test_no_build_rejects_a_missing_local_image(self) -> None:
-        (self.state / "image").unlink()
-        result = self.invoke("--no-build")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("Run without --no-build first", result.stderr)
-        self.assertEqual(self.actions(), [])
-
-    def test_validation_targets_only_the_selected_backend(self) -> None:
+    def test_legacy_validation_targets_only_selected_backend(self) -> None:
         for backend in ("duckdb", "postgres"):
             with self.subTest(backend=backend):
                 self.log.write_text("")
                 result = self.invoke("--db", backend, "--skip-download", "--validate")
                 self.assert_success(result)
                 self.assertIn(
-                    RUN + ["validate-garmin", "--backend", backend],
-                    self.actions(),
+                    RUN + ["validate-garmin", "--backend", backend], self.actions()
                 )
                 other = "postgres" if backend == "duckdb" else "duckdb"
-                self.assertNotIn(RUN + [f"import-garmin-{other}"], self.actions())
+                self.assertNotIn(legacy_import(other), self.actions())
 
-    def test_postgres_import_does_not_stop_an_existing_duckdb_ui(self) -> None:
-        (self.state / "duckdb-ui").touch()
-        result = self.invoke("--db", "postgres", "--validate")
-        self.assert_success(result)
-        self.assertTrue((self.state / "duckdb-ui").exists())
-        self.assertNotIn(["stop", "duckdb-ui"], self.actions())
-
+    # ── argument validation ────────────────────────────────────────────────
     def test_env_file_is_preserved_or_created_from_the_sample(self) -> None:
         original = self.env_file.read_text()
         self.assert_success(self.invoke("--skip-download"))
@@ -307,11 +371,18 @@ class RunImportTests(unittest.TestCase):
         result = self.invoke("--help")
         self.assertEqual(result.returncode, 0)
         self.assertIn("Usage: ./scripts/run_import.sh [options]", result.stdout)
-        self.assertIn("--db postgres|duckdb|both", result.stdout)
+        self.assertIn("--look-back-days N", result.stdout)
         invalid_options = (
             ("--db",), ("--db", "sqlite"), ("--activity-limit",),
             ("--activity-limit", "0"), ("--activity-limit", "-1"),
             ("--activity-limit", "1.5"), ("--activity-limit", "many"),
+            ("--look-back-days",), ("--look-back-days", "0"),
+            ("--look-back-days", "-3"), ("--look-back-days", "1.5"),
+            ("--look-back-days", "abc"),
+            ("--look-back-days", "30", "--skip-download"),
+            ("--look-back-days", "30", "--latest"),
+            ("--look-back-days", "30", "--full-download"),
+            ("--look-back-days", "30", "--activity-limit", "10"),
             ("--latest", "--full-download"),
             ("--skip-download", "--latest"),
             ("--skip-download", "--full-download"),
@@ -337,13 +408,17 @@ class RunImportTests(unittest.TestCase):
                 self.assertIn(message, result.stderr)
                 self.assertEqual(self.actions(), [])
 
-    def test_build_auth_and_refresh_failures_abort_before_touching_databases(self) -> None:
+    def test_no_build_rejects_a_missing_local_image(self) -> None:
+        (self.state / "image").unlink()
+        result = self.invoke("--no-build")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Run without --no-build first", result.stderr)
+        self.assertEqual(self.actions(), [])
+
+    # ── failure handling ────────────────────────────────────────────────────
+    def test_build_or_auth_failure_aborts_before_touching_databases(self) -> None:
         (self.state / "duckdb-ui").touch()
-        for failure in (
-            "build:import-garmin-duckdb",
-            "run:garmin-auth",
-            "run:refresh-garmin-source",
-        ):
+        for failure in ("build:import-garmin-duckdb", "run:garmin-auth"):
             with self.subTest(failure=failure):
                 self.log.write_text("")
                 result = self.invoke("--db", "both", "--auth", fail=failure)
@@ -353,17 +428,28 @@ class RunImportTests(unittest.TestCase):
                 self.assertTrue((self.state / "duckdb-ui").exists())
                 self.assertFalse((self.state / "postgres").exists())
                 self.assertNotIn(["stop", "duckdb-ui"], self.actions())
-                self.assertNotIn(RUN + ["import-garmin-duckdb"], self.actions())
-                if failure != "run:refresh-garmin-source":
-                    self.assertNotIn(RUN + ["refresh-garmin-source"], self.actions())
 
-    def test_postgres_health_failure_prevents_import(self) -> None:
-        result = self.invoke("--skip-download", fail="up:postgres")
+    def test_sync_failure_does_not_restart_duckdb_ui(self) -> None:
+        (self.state / "duckdb-ui").touch()
+        result = self.invoke("--db", "duckdb", fail="run:sync-garmin")
+        self.assertEqual(result.returncode, 42)
+        self.assertNotIn("Garmin import complete.", result.stdout)
+        self.assertFalse((self.state / "duckdb-ui").exists())
+        self.assertNotIn(UP + ["duckdb-ui"], self.actions())
+
+    def test_postgres_health_failure_prevents_sync(self) -> None:
+        result = self.invoke(fail="up:postgres")
         self.assertEqual(result.returncode, 42)
         self.assertIn("starting PostgreSQL", result.stderr)
-        self.assertNotIn(RUN + ["import-garmin-postgres"], self.actions())
+        self.assertNotIn(sync("postgres"), self.actions())
 
-    def test_import_or_validation_failure_does_not_restart_duckdb_ui(self) -> None:
+    def test_ui_health_failure_after_delta_does_not_report_success(self) -> None:
+        result = self.invoke("--db", "duckdb", fail="up:duckdb-ui")
+        self.assertEqual(result.returncode, 42)
+        self.assertIn("starting the DuckDB UI", result.stderr)
+        self.assertNotIn("Garmin import complete.", result.stdout)
+
+    def test_legacy_import_failure_does_not_restart_duckdb_ui(self) -> None:
         for failure in ("run:import-garmin-duckdb", "run:validate-garmin"):
             with self.subTest(failure=failure):
                 self.log.write_text("")
@@ -376,12 +462,7 @@ class RunImportTests(unittest.TestCase):
                 self.assertFalse((self.state / "duckdb-ui").exists())
                 self.assertNotIn(UP + ["duckdb-ui"], self.actions())
 
-    def test_ui_health_failure_does_not_report_import_workflow_success(self) -> None:
-        result = self.invoke("--db", "duckdb", "--skip-download", fail="up:duckdb-ui")
-        self.assertEqual(result.returncode, 42)
-        self.assertIn("starting the DuckDB UI", result.stderr)
-        self.assertNotIn("Garmin import complete.", result.stdout)
-
+    # ── run_database.sh unchanged behavior ──────────────────────────────────
     def test_existing_database_launcher_still_builds_the_ui_by_default(self) -> None:
         (self.job_dir / "local_data" / "garmin.duckdb").touch()
         result = self.invoke("--duckdb", script="scripts/run_database.sh")

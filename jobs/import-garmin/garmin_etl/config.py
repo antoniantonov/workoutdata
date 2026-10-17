@@ -16,6 +16,8 @@ import os
 from pathlib import Path
 from typing import Dict
 
+from garmin_etl.delta import DEFAULT_LOOK_BACK_DAYS, validate_look_back_days
+
 
 def _resolve(base_dir: Path, value: str) -> Path:
     """Resolve a possibly-relative path against ``base_dir``."""
@@ -62,6 +64,29 @@ def load_garmin_configuration() -> Dict[str, object]:
     # When the download phase is required, a download failure aborts the job
     # instead of silently falling back to existing (stale) SQLite databases.
     garmin_download_required = os.getenv("GARMIN_DOWNLOAD_REQUIRED", "true").lower() == "true"
+
+    # ── Import mode + delta window ──────────────────────────────────────────
+    # 'delta'  : destination-aware missing-key synchronization (default online).
+    # 'legacy' : count-based full-cache download+import (explicit opt-in only).
+    import_mode = os.getenv("GARMIN_IMPORT_MODE", "delta").strip().lower()
+    if import_mode not in ("delta", "legacy"):
+        raise ValueError(
+            f"Invalid GARMIN_IMPORT_MODE '{import_mode}'. Must be 'delta' or 'legacy'."
+        )
+
+    # Look-back window in days. Precedence is resolved by the caller (CLI beats
+    # environment beats the built-in default); an invalid *configured* value is
+    # never silently replaced by the default.
+    look_back_raw = os.getenv("GARMIN_LOOK_BACK_DAYS")
+    if look_back_raw is None or look_back_raw.strip() == "":
+        look_back_days = DEFAULT_LOOK_BACK_DAYS
+    else:
+        try:
+            look_back_days = validate_look_back_days(look_back_raw.strip())
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid GARMIN_LOOK_BACK_DAYS '{look_back_raw}': {exc}"
+            ) from exc
 
     # ── Paths ───────────────────────────────────────────────────────────────
     # Directory containing the GarminDB SQLite databases
@@ -128,6 +153,8 @@ def load_garmin_configuration() -> Dict[str, object]:
         "GARMIN_DOWNLOAD": garmin_download,
         "GARMIN_DOWNLOAD_LATEST": garmin_download_latest,
         "GARMIN_DOWNLOAD_REQUIRED": garmin_download_required,
+        "GARMIN_IMPORT_MODE": import_mode,
+        "GARMIN_LOOK_BACK_DAYS": look_back_days,
         "GARMIN_DB_DIR": garmin_db_dir,
         "GARMIN_DUCKDB_PATH": garmin_duckdb_path,
         "GARMIN_BASE_DIR": garmin_base_dir,
@@ -147,6 +174,9 @@ def load_garmin_configuration() -> Dict[str, object]:
 
     print("✅ Garmin configuration loaded")
     print(f"  - Database type: {database_type.upper()}")
+    print(f"  - Import mode: {import_mode}")
+    if import_mode == "delta":
+        print(f"  - Look-back window: {look_back_days} day(s)")
     print(f"  - Download phase: {'enabled' if garmin_download else 'disabled (transform-only)'}")
     print(f"  - Garmin SQLite dir: {garmin_db_dir}")
     if database_type == "duckdb":

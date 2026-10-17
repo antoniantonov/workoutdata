@@ -147,6 +147,254 @@ def _assert_matches_source(
     print(f"  - {backend}: primary keys and workout relationships are valid")
 
 
+# =============================================================================
+# Delta-scope validation (a populated destination need NOT equal the whole cache)
+# =============================================================================
+
+def _storage_for(backend: str):
+    if backend == "duckdb":
+        from garmin_etl.storage import duckdb as storage
+    else:
+        from garmin_etl.storage import postgres as storage
+    return storage
+
+
+def _empty_selected() -> Dict[str, pd.DataFrame]:
+    return {
+        name: pd.DataFrame(columns=columns)
+        for name, (_, columns, _) in _TABLES.items()
+    }
+
+
+def _select_duckdb(config: dict, activity_ids, sleep_days) -> Dict[str, pd.DataFrame]:
+    import duckdb
+
+    con = duckdb.connect(str(config["GARMIN_DUCKDB_PATH"]), read_only=True)
+    try:
+        frames = _empty_selected()
+        aids = [str(a) for a in activity_ids]
+        days = list(sleep_days)
+        if aids:
+            wp = ", ".join("?" for _ in aids)
+            wcols = ", ".join(_TABLES["workouts"][1])
+            frames["workouts"] = con.execute(
+                f"SELECT {wcols} FROM garmin_workout_metadata WHERE activity_id IN ({wp})",
+                aids,
+            ).fetchdf()
+            tcols = ", ".join(_TABLES["timeseries"][1])
+            frames["timeseries"] = con.execute(
+                f"SELECT {tcols} FROM garmin_timeseries WHERE activity_id IN ({wp})",
+                aids,
+            ).fetchdf()
+        if days:
+            dp = ", ".join("?" for _ in days)
+            scols = ", ".join(_TABLES["sleep"][1])
+            frames["sleep"] = con.execute(
+                f"SELECT {scols} FROM garmin_sleep WHERE day IN ({dp})", days
+            ).fetchdf()
+        return frames
+    finally:
+        con.close()
+
+
+def _select_postgres(config: dict, activity_ids, sleep_days) -> Dict[str, pd.DataFrame]:
+    from garmin_etl.storage.postgres import get_postgres_connection
+
+    conn = get_postgres_connection(config)
+    try:
+        conn.read_only = True
+        frames = _empty_selected()
+        aids = [str(a) for a in activity_ids]
+        days = list(sleep_days)
+        with conn.cursor() as cur:
+            if aids:
+                wcols = ", ".join(f'"{c}"' for c in _TABLES["workouts"][1])
+                cur.execute(
+                    f"SELECT {wcols} FROM garmin_workout_metadata "
+                    "WHERE activity_id = ANY(%s)",
+                    (aids,),
+                )
+                frames["workouts"] = pd.DataFrame(
+                    cur.fetchall(), columns=[d.name for d in cur.description]
+                )
+                tcols = ", ".join(f'"{c}"' for c in _TABLES["timeseries"][1])
+                cur.execute(
+                    f"SELECT {tcols} FROM garmin_timeseries WHERE activity_id = ANY(%s)",
+                    (aids,),
+                )
+                frames["timeseries"] = pd.DataFrame(
+                    cur.fetchall(), columns=[d.name for d in cur.description]
+                )
+            if days:
+                scols = ", ".join(f'"{c}"' for c in _TABLES["sleep"][1])
+                cur.execute(
+                    f"SELECT {scols} FROM garmin_sleep WHERE day = ANY(%s)", (days,)
+                )
+                frames["sleep"] = pd.DataFrame(
+                    cur.fetchall(), columns=[d.name for d in cur.description]
+                )
+        return frames
+    finally:
+        conn.close()
+
+
+def load_selected(config: dict, backend: str, activity_ids, sleep_days) -> Dict[str, pd.DataFrame]:
+    """Read only the selected rows from ``backend`` (read-only)."""
+    if backend == "duckdb":
+        return _select_duckdb(config, activity_ids, sleep_days)
+    return _select_postgres(config, activity_ids, sleep_days)
+
+
+def assert_scope_present(
+    config: dict, backend: str, activity_ids, sleep_days, storage=None
+) -> None:
+    """Fail unless every planned activity and valid sleep day is committed.
+
+    This is the always-on completeness gate (independent of the deep ``--validate``
+    comparison): a payload/key must not be treated as imported until it is
+    actually present in its required destination. ``storage`` may be injected to
+    target a specific backend module (used by the coordinator).
+    """
+    storage = storage or _storage_for(backend)
+    wanted_ids = {str(a) for a in activity_ids}
+    if wanted_ids:
+        present = storage.get_existing_activity_ids(config, wanted_ids)
+        missing = wanted_ids - present
+        if missing:
+            raise AssertionError(
+                f"{backend}: {len(missing)} planned activity id(s) missing after import."
+            )
+    wanted_days = {d for d in sleep_days}
+    if wanted_days:
+        low, high = min(wanted_days), max(wanted_days)
+        present_days = storage.get_existing_sleep_days(config, low, high)
+        missing_days = wanted_days - set(present_days)
+        if missing_days:
+            raise AssertionError(
+                f"{backend}: {len(missing_days)} valid sleep day(s) missing after import."
+            )
+    print(f"  - {backend}: all planned activity/sleep keys are present")
+
+
+def assert_scope_matches_source(
+    expected: Dict[str, pd.DataFrame],
+    actual: Dict[str, pd.DataFrame],
+    backend: str,
+) -> None:
+    """Deep-compare the selected rows to the transformed selected source.
+
+    Uses the same normalization/tolerance/integrity checks as the full-cache
+    validator, but only over the selected scope — a windowed destination is not
+    required to equal the entire historical cache.
+    """
+    for name in _TABLES:
+        expected_frame = _normalize(name, expected[name])
+        actual_frame = _normalize(name, actual[name])
+        _assert_integrity(name, actual_frame)
+        pd.testing.assert_frame_equal(
+            actual_frame,
+            expected_frame,
+            check_dtype=False,
+            check_exact=False,
+            check_categorical=False,
+            rtol=1e-12,
+            atol=1e-12,
+        )
+        print(f"  - {backend} {name}: {len(actual_frame)} selected rows match source")
+    _assert_relationships(actual)
+
+
+def validate_delta(
+    config: dict,
+    backend: str,
+    expected: Dict[str, pd.DataFrame],
+    activity_ids,
+    sleep_days,
+    deep: bool = False,
+) -> None:
+    """Validate a single backend's delta: presence always, deep on request."""
+    assert_scope_present(config, backend, activity_ids, sleep_days)
+    if deep:
+        actual = load_selected(config, backend, activity_ids, sleep_days)
+        assert_scope_matches_source(expected, actual, backend)
+
+
+def _parity_compare(name: str, left: pd.DataFrame, right: pd.DataFrame, first: str, second: str) -> int:
+    """Compare two already-restricted, normalized frames; raise on any diff."""
+    _, _, keys = _TABLES[name]
+    left_sorted = left.sort_values(keys).reset_index(drop=True)
+    right_sorted = right.sort_values(keys).reset_index(drop=True)
+    try:
+        pd.testing.assert_frame_equal(
+            left_sorted, right_sorted,
+            check_dtype=False, check_exact=False, check_categorical=False,
+            rtol=1e-12, atol=1e-12,
+        )
+    except AssertionError as exc:
+        raise AssertionError(
+            f"{name}: {first}/{second} disagree on shared window data "
+            f"(reconciliation error): {exc}"
+        ) from exc
+    return len(left_sorted)
+
+
+def validate_window_parity(
+    config: dict, backends, activity_ids, sleep_days
+) -> None:
+    """For ``both``: shared window data across backends must match exactly.
+
+    Compares candidate activities/days present in *both* backends. For
+    activities present in both, the **complete** timeseries record set is
+    compared (record keys are not intersected), so a backend missing or having
+    extra records for a shared activity is surfaced as a reconciliation error
+    rather than silently hidden. This runs on ``--validate`` even for an
+    otherwise no-op run, so a previously-committed mismatch cannot be masked on
+    a later run merely because both targets now contain the key.
+    """
+    backends = list(backends)
+    if len(backends) < 2:
+        return
+    loaded = {
+        backend: load_selected(config, backend, activity_ids, sleep_days)
+        for backend in backends
+    }
+    first, second = backends[0], backends[1]
+
+    left_meta = _normalize("workouts", loaded[first]["workouts"])
+    right_meta = _normalize("workouts", loaded[second]["workouts"])
+    common_activities = set(left_meta["activity_id"]) & set(right_meta["activity_id"])
+    if common_activities:
+        n = _parity_compare(
+            "workouts",
+            left_meta[left_meta["activity_id"].isin(common_activities)],
+            right_meta[right_meta["activity_id"].isin(common_activities)],
+            first, second,
+        )
+        print(f"  - workouts: {n} shared activity/ies match across backends")
+
+        # Compare the full record set for activities present in both backends.
+        left_ts = _normalize("timeseries", loaded[first]["timeseries"])
+        right_ts = _normalize("timeseries", loaded[second]["timeseries"])
+        _parity_compare(
+            "timeseries",
+            left_ts[left_ts["activity_id"].isin(common_activities)],
+            right_ts[right_ts["activity_id"].isin(common_activities)],
+            first, second,
+        )
+
+    left_sleep = _normalize("sleep", loaded[first]["sleep"])
+    right_sleep = _normalize("sleep", loaded[second]["sleep"])
+    common_days = set(left_sleep["day"]) & set(right_sleep["day"])
+    if common_days:
+        n = _parity_compare(
+            "sleep",
+            left_sleep[left_sleep["day"].isin(common_days)],
+            right_sleep[right_sleep["day"].isin(common_days)],
+            first, second,
+        )
+        print(f"  - sleep: {n} shared day(s) match across backends")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Validate Garmin databases against the transformed SQLite source."

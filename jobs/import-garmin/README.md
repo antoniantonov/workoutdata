@@ -63,48 +63,79 @@ From the repository root:
 ```
 
 The launcher builds `jobs/import-garmin/Dockerfile` once into the shared
-`workoutdata/import-garmin:local` image, refreshes GarminDB SQLite, and imports
-the selected destination(s). It creates `.env` from `.env.example` only if
-missing; existing configuration is not overwritten. PostgreSQL is the default,
-regardless of `DATABASE_TYPE` in `.env`, matching `scripts/run_database.sh`.
-Docker must be running.
+`workoutdata/import-garmin:local` image, then runs a **destination-aware delta
+sync** (the new default): it discovers Garmin data in the last 30 days, compares
+it with the selected destination(s), and downloads/imports only the missing
+data. It never re-imports the whole cache. It creates `.env` from `.env.example`
+only if missing; existing configuration is not overwritten. PostgreSQL is the
+default destination, regardless of `DATABASE_TYPE` in `.env`, matching
+`scripts/run_database.sh`. Docker must be running.
 
 For first-time login or to renew authentication, add `--auth`. Credentials and
 MFA are entered only at the interactive Docker prompt. Normal runs reuse the
 saved session without prompting.
 
 ```bash
-# Authenticate, download, import, and leave the DuckDB Web UI running.
+# Default: destination-aware 30-day delta into PostgreSQL.
+./jobs/import-garmin/scripts/run_import.sh
+
+# Authenticate first, then delta-sync into DuckDB and open its Web UI.
 ./jobs/import-garmin/scripts/run_import.sh --db duckdb --auth
 
-# Refresh once, load both databases, and compare both with the source.
-./jobs/import-garmin/scripts/run_import.sh --db both --validate
+# Widen the window to 60 days and load both databases with deep validation.
+./jobs/import-garmin/scripts/run_import.sh --db both --look-back-days 60 --validate
 
-# Request a full download rather than an incremental refresh.
+# Legacy count-based full download (NOT the delta mode; see below).
 ./jobs/import-garmin/scripts/run_import.sh --db postgres --full-download --activity-limit 2000
 
-# Re-import local SQLite data without Garmin access or an image build.
+# Legacy offline re-import of local SQLite data without Garmin access or a build.
 ./jobs/import-garmin/scripts/run_import.sh --db duckdb --skip-download --no-build
 ```
 
+#### Delta mode (default) vs legacy mode
+
+The default **delta mode** keys activities by Garmin `activity_id` and sleep by
+provider-calendar `day`, and loads only what the selected destination is
+missing within the look-back window. Switching destinations, or a long gap
+between runs, is handled correctly because the comparison is against the
+destination, not a source cache or a fixed activity count.
+
+The `--latest`, `--full-download`, `--activity-limit`, and `--skip-download`
+flags select the pre-existing **legacy count-based mode** (full GarminDB refresh
++ whole-cache import). The launcher chooses legacy automatically when any of
+those flags are used, and sets `GARMIN_IMPORT_MODE=legacy` for that run.
+`--look-back-days` is a delta-only option and is rejected when combined with any
+legacy flag.
+
+**Limitations (delta mode).** Delta mode is *missing-key* synchronization: it
+does not detect edits to an already-imported activity or corrections to an
+already-imported sleep night (there is no verified Garmin change feed). Sleep
+has no lightweight "available dates" API, so candidate dates in the window are
+probed once per run; empty or provisional nights stay retryable on later runs
+and are reported separately from real downloads. The activity date-filter and
+sleep endpoints are community-observed conventions, not an official Garmin API
+contract; an opt-in live smoke test verifies them.
+
 | Option | Purpose |
 |---|---|
-| `--db postgres\|duckdb\|both` | Choose the import destination(s); default: `postgres` |
-| `--auth` | Run interactive Garmin authentication before refreshing the source |
-| `--skip-download` | Import existing `local_data/garmin_sqlite/DBs/` files without contacting Garmin |
-| `--latest` / `--full-download` | Override `GARMIN_DOWNLOAD_LATEST` for this run |
-| `--activity-limit N` | Set both incremental and full activity-download limits to a positive integer for this run |
+| `--db postgres\|duckdb\|both` | Choose the destination(s); default: `postgres` |
+| `--look-back-days N` | Delta window size in days (positive integer; default 30). CLI overrides `GARMIN_LOOK_BACK_DAYS`, which overrides the built-in default |
+| `--auth` | Run interactive Garmin authentication first |
+| `--validate` | Add deep row/value comparison of the imported delta against the transformed source; with `both`, also check window-scoped backend parity |
 | `--no-build` | Require and reuse the existing local Garmin image; PostgreSQL's official image is still pulled if missing |
-| `--validate` | Compare selected destinations with the transformed source; with `both`, also check backend parity |
+| `--skip-download` | **Legacy:** import existing `local_data/garmin_sqlite/DBs/` files without contacting Garmin |
+| `--latest` / `--full-download` | **Legacy:** override `GARMIN_DOWNLOAD_LATEST` for a legacy count-based download |
+| `--activity-limit N` | **Legacy:** set both incremental and full activity-download limits to a positive integer |
 | `--help` | Show all options |
 
-Without overrides, download settings come from `.env`: the sample uses an
-incremental refresh limited to 25 latest activities, or a full-download limit
-of 1000 activities. A full download is therefore not necessarily unlimited.
-The activity limit controls downloading, not how many existing SQLite rows are
-imported. `--skip-download` cannot be combined with `--auth` or download
-overrides. Other settings, including `GARMIN_START_DATE`, remain configurable
-in `.env`.
+In delta mode, the effective window is `--look-back-days`, else
+`GARMIN_LOOK_BACK_DAYS`, else 30; an invalid configured value is an error, never
+silently defaulted. `GARMIN_LOCAL_TIMEZONE` (default `UTC`) is used for sleep
+calendar dates and the activity date window — set it to your account calendar
+timezone if that is not UTC. The legacy download settings (`GARMIN_DOWNLOAD_*`,
+`GARMIN_START_DATE`) apply only to legacy mode and never truncate the delta
+default. `--skip-download` cannot be combined with `--auth` or download
+overrides, and `--look-back-days` cannot be combined with any legacy flag.
 
 The launcher waits for PostgreSQL to be healthy before importing. For DuckDB,
 it stops an existing `duckdb-ui` container immediately before database work to
@@ -114,9 +145,13 @@ DuckDB write connection before running it. PostgreSQL and/or the DuckDB Web UI
 remain running afterward, with connection details printed by the existing
 database launcher. Other database services are not stopped.
 
-Failures abort with a nonzero exit status. A source-refresh failure never
-falls back to stale data; an import or validation failure does not start the
-DuckDB UI. PostgreSQL, if already started, is left running.
+Failures abort with a nonzero exit status. Delta mode never quietly reverts to
+a full cached import after a failed required refresh; a legacy source-refresh
+failure never falls back to stale data; an import or validation failure does
+not start the DuckDB UI. PostgreSQL, if already started, is left running. For
+`both`, there is no cross-database transaction: if one backend commits and the
+other fails, the run exits non-zero and reports which backend committed; a retry
+reuses the completed backend and repairs only the outstanding one.
 
 Set `GARMIN_POSTGRES_HOST_PORT` and `GARMIN_DUCKDB_UI_PORT` in `.env` or in the
 launcher's environment to change the local query ports (defaults: 5433 and
@@ -254,13 +289,15 @@ values for its individual services.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `GARMIN_DOWNLOAD_LATEST` | `true` | Use GarminDB incremental activity download |
-| `GARMIN_DOWNLOAD_REQUIRED` | `true` | Fail rather than use stale SQLite after a failed required refresh |
-| `GARMIN_START_DATE` | `01/01/2020` | Earliest sleep date requested from GarminDB |
-| `GARMIN_DOWNLOAD_ALL_ACTIVITIES` | `1000` | Full-download activity limit |
-| `GARMIN_DOWNLOAD_LATEST_ACTIVITIES` | `25` | Incremental activity limit |
+| `GARMIN_IMPORT_MODE` | `delta` | `delta` (destination-aware missing-key sync) or `legacy` (count-based full-cache import). Legacy launcher flags set this to `legacy` for the run |
+| `GARMIN_LOOK_BACK_DAYS` | `30` | Delta window size in days; overridden by `--look-back-days`. An invalid value is an error |
+| `GARMIN_LOCAL_TIMEZONE` | `UTC` | Sleep calendar dates and the activity date window; stored timestamps remain local-naive. Set to the account calendar timezone if not UTC |
+| `GARMIN_DOWNLOAD_LATEST` | `true` | **Legacy only:** use GarminDB incremental activity download |
+| `GARMIN_DOWNLOAD_REQUIRED` | `true` | **Legacy only:** fail rather than use stale SQLite after a failed required refresh |
+| `GARMIN_START_DATE` | `01/01/2020` | **Legacy only:** earliest sleep date requested from GarminDB |
+| `GARMIN_DOWNLOAD_ALL_ACTIVITIES` | `1000` | **Legacy only:** full-download activity limit |
+| `GARMIN_DOWNLOAD_LATEST_ACTIVITIES` | `25` | **Legacy only:** incremental activity limit |
 | `GARMIN_DOMAIN` | `garmin.com` | Garmin domain; use `garmin.cn` where applicable |
-| `GARMIN_LOCAL_TIMEZONE` | `UTC` | Metadata only; timestamps remain local-naive |
 | `POSTGRES_DATABASE` | `garmin` | Compose PostgreSQL database |
 | `POSTGRES_USER` | `garmin` | Compose PostgreSQL user |
 | `POSTGRES_PASSWORD` | `garmin-local-only` | Local Compose password; replace outside local development |
@@ -567,24 +604,28 @@ docker compose --profile postgres down
 
 ```text
 jobs/import-garmin/
-  main.py                       transform and load orchestrator
-  scripts/run_import.sh         build, refresh, import, and leave databases running
+  main.py                       transform/load orchestrator (routes online delta to the coordinator)
+  scripts/run_import.sh         build, delta-sync (or legacy import), leave databases running
   scripts/run_database.sh       start a queryable database without importing
-  tests/test_run_import.py      isolated launcher and container-order tests
+  tests/                        isolated launcher, planner, adapter, transform, storage, and sync tests
   garmin_etl/
     auth.py                     interactive Docker Garmin authentication
-    config.py                   environment and path configuration
-    download.py                 standalone GarminDB source refresh
-    transform.py                SQLite to stable DataFrames
+    config.py                   environment and path configuration (delta window + mode)
+    delta.py                    typed window/inventory/plan models and pure delta set logic
+    garmin_client.py            garth adapter: date-filtered discovery + selective fetch
+    source_import.py            selective payload acquisition, cache manifest, GarminDB import
+    sync.py                     delta coordinator (discover, plan, acquire once, load each target)
+    download.py                 standalone legacy GarminDB source refresh
+    transform.py                SQLite to stable DataFrames (full + selective; stable workoutId policy)
     query.py                    containerized DuckDB/PostgreSQL SQL client
-    validate.py                 exact source/destination/backend validation
-    storage/duckdb.py           DuckDB DDL, load, and query helpers
-    storage/postgres.py         PostgreSQL DDL, load, and query helpers
+    validate.py                 full-cache and delta-scope validation
+    storage/duckdb.py           DuckDB DDL, delta-safe load, read-only inventories
+    storage/postgres.py         PostgreSQL DDL, delta-safe load, read-only inventories
   Dockerfile
-  docker-compose.yml
+  docker-compose.yml            adds the sync-garmin delta service
   pyproject.toml
   .env.example
-  local_data/                   ignored runtime data and credentials
+  local_data/                   ignored runtime data, delta cache, and credentials
 ```
 
 Run the launcher regression tests from the repository root with

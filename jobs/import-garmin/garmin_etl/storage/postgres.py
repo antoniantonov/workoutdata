@@ -8,7 +8,7 @@ idempotent delete-by-id upserts. Nullable integers are bound as ``None`` (never
 from __future__ import annotations
 
 import math
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np  # type: ignore
 import pandas as pd  # type: ignore
@@ -168,7 +168,22 @@ def ensure_tables(config: dict) -> None:
 def import_workouts(
     workouts_df: pd.DataFrame, timeseries_df: pd.DataFrame, config: dict
 ) -> dict:
-    """Upsert workout metadata + per-second timeseries (idempotent by activity_id)."""
+    """Upsert selected workout metadata + timeseries (delta-safe, idempotent).
+
+    Timeseries are replaced by the **selected workout-metadata ids** so a
+    selected zero-sample activity clears its old records. An empty delta
+    performs no DELETE/INSERT.
+    """
+    if not timeseries_df.empty:
+        meta_ids = {str(a) for a in workouts_df["activity_id"].tolist()}
+        ts_ids = {str(a) for a in timeseries_df["activity_id"].dropna().tolist()}
+        orphans = ts_ids - meta_ids
+        if orphans:
+            raise ValueError(
+                f"Refusing to write {len(orphans)} timeseries activity id(s) not "
+                "present in the supplied workout metadata."
+            )
+
     conn = get_postgres_connection(config)
     try:
         with conn.cursor() as cur:
@@ -176,16 +191,24 @@ def import_workouts(
             cur.execute(TIMESERIES_DDL)
 
             activity_ids = [str(a) for a in workouts_df["activity_id"].tolist()]
-            ts_activity_ids = [
-                str(a) for a in timeseries_df["activity_id"].dropna().unique().tolist()
-            ]
 
-            if ts_activity_ids:
+            if workouts_df.empty and timeseries_df.empty:
+                cur.execute("SELECT COUNT(*) FROM garmin_workout_metadata")
+                meta_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM garmin_timeseries")
+                ts_count = cur.fetchone()[0]
+                conn.commit()
+                print("  ℹ️  PostgreSQL workouts: empty delta — no rows changed")
+                return {"workouts": meta_count, "timeseries": ts_count}
+
+            if activity_ids:
+                # Delete timeseries by the SELECTED METADATA ids (not by ids in
+                # the incoming timeseries frame) so a zero-sample replacement
+                # cannot leave old records behind.
                 cur.execute(
                     "DELETE FROM garmin_timeseries WHERE activity_id = ANY(%s)",
-                    (ts_activity_ids,),
+                    (activity_ids,),
                 )
-            if activity_ids:
                 cur.execute(
                     "DELETE FROM garmin_workout_metadata WHERE activity_id = ANY(%s)",
                     (activity_ids,),
@@ -262,19 +285,99 @@ def import_sleep(sleep_df: pd.DataFrame, config: dict) -> dict:
 # Query helpers
 # =============================================================================
 
-def get_existing_activity_ids(config: dict) -> set:
-    """Return the set of activity_ids already present in workout metadata."""
+def _connect_ro(config: dict):
+    """Open a read-only PostgreSQL connection for destination discovery.
+
+    An unavailable server or authentication failure raises (discovery aborts);
+    a missing table is handled per-query and reported as an empty inventory,
+    which for PostgreSQL means a not-yet-created destination.
+    """
     conn = get_postgres_connection(config)
+    conn.read_only = True
+    return conn
+
+
+def _table_exists(cur, table: str) -> bool:
+    cur.execute(
+        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = %s)",
+        (table,),
+    )
+    return bool(cur.fetchone()[0])
+
+
+def get_existing_activity_ids(config: dict, candidate_ids: Optional[Iterable[str]] = None) -> set:
+    """Return committed ``activity_id`` values (read-only).
+
+    ``candidate_ids=None`` returns every stored id; an **empty** collection
+    returns an empty set (it means *none*, never "all"); a non-empty collection
+    is matched with a parameterized ``= ANY`` query.
+    """
+    if candidate_ids is not None:
+        candidates = [str(c) for c in candidate_ids]
+        if not candidates:
+            return set()
+    else:
+        candidates = None
+
+    conn = _connect_ro(config)
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                "SELECT EXISTS (SELECT FROM information_schema.tables "
-                "WHERE table_name = 'garmin_workout_metadata')"
-            )
-            if not cur.fetchone()[0]:
+            if not _table_exists(cur, "garmin_workout_metadata"):
                 return set()
-            cur.execute("SELECT activity_id FROM garmin_workout_metadata")
+            if candidates is None:
+                cur.execute("SELECT activity_id FROM garmin_workout_metadata")
+            else:
+                cur.execute(
+                    "SELECT activity_id FROM garmin_workout_metadata "
+                    "WHERE activity_id = ANY(%s)",
+                    (candidates,),
+                )
             return {r[0] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_existing_sleep_days(config: dict, start_day, end_day) -> set:
+    """Return committed sleep ``day`` values within ``[start_day, end_day]`` (read-only)."""
+    conn = _connect_ro(config)
+    try:
+        with conn.cursor() as cur:
+            if not _table_exists(cur, "garmin_sleep"):
+                return set()
+            cur.execute(
+                "SELECT day FROM garmin_sleep WHERE day BETWEEN %s AND %s",
+                (start_day, end_day),
+            )
+            return {r[0] for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def get_workout_id_assignments(
+    config: dict, activity_ids: Optional[Iterable[str]] = None
+) -> dict:
+    """Return the committed ``{activity_id: workoutId}`` mapping (read-only)."""
+    if activity_ids is not None:
+        wanted = [str(a) for a in activity_ids]
+        if not wanted:
+            return {}
+    else:
+        wanted = None
+
+    conn = _connect_ro(config)
+    try:
+        with conn.cursor() as cur:
+            if not _table_exists(cur, "garmin_workout_metadata"):
+                return {}
+            if wanted is None:
+                cur.execute('SELECT activity_id, "workoutId" FROM garmin_workout_metadata')
+            else:
+                cur.execute(
+                    'SELECT activity_id, "workoutId" FROM garmin_workout_metadata '
+                    "WHERE activity_id = ANY(%s)",
+                    (wanted,),
+                )
+            return {r[0]: r[1] for r in cur.fetchall()}
     finally:
         conn.close()
 
@@ -347,6 +450,8 @@ __all__ = [
     "import_workouts",
     "import_sleep",
     "get_existing_activity_ids",
+    "get_existing_sleep_days",
+    "get_workout_id_assignments",
     "get_garmin_workout_metadata",
     "get_garmin_timeseries",
     "get_garmin_sleep",

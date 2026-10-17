@@ -121,34 +121,84 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
-def _read_activities(db_path: Path) -> pd.DataFrame:
+def _chunk(values: list, size: int = 900):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
+def _read_filtered(
+    conn: sqlite3.Connection,
+    base_sql: str,
+    column: str,
+    values: list,
+    order_by: str = "",
+) -> pd.DataFrame:
+    """Read rows whose ``column`` is in ``values`` via chunked ``IN`` queries."""
+    frames = []
+    for chunk in _chunk([str(v) for v in values]):
+        placeholders = ", ".join("?" for _ in chunk)
+        sql = f"{base_sql} WHERE {column} IN ({placeholders})"
+        if order_by:
+            sql += f" ORDER BY {order_by}"
+        frames.append(pd.read_sql_query(sql, conn, params=chunk))
+    if not frames:
+        return pd.read_sql_query(f"{base_sql} WHERE 1=0", conn)
+    return pd.concat(frames, ignore_index=True)
+
+
+def _read_activities(db_path: Path, activity_ids: Optional[list] = None) -> pd.DataFrame:
     conn = _connect_ro(db_path)
     try:
         if not _table_exists(conn, "activities"):
             raise ValueError(f"Table 'activities' not found in {db_path}")
-        return pd.read_sql_query("SELECT * FROM activities", conn)
+        if activity_ids is None:
+            return pd.read_sql_query("SELECT * FROM activities", conn)
+        return _read_filtered(conn, "SELECT * FROM activities", "activity_id", activity_ids)
     finally:
         conn.close()
 
 
-def _read_activity_records(db_path: Path) -> pd.DataFrame:
+def _read_activity_records(db_path: Path, activity_ids: Optional[list] = None) -> pd.DataFrame:
     conn = _connect_ro(db_path)
     try:
         if not _table_exists(conn, "activity_records"):
             raise ValueError(f"Table 'activity_records' not found in {db_path}")
-        return pd.read_sql_query(
-            "SELECT * FROM activity_records ORDER BY activity_id, record", conn
+        if activity_ids is None:
+            return pd.read_sql_query(
+                "SELECT * FROM activity_records ORDER BY activity_id, record", conn
+            )
+        return _read_filtered(
+            conn,
+            "SELECT * FROM activity_records",
+            "activity_id",
+            activity_ids,
+            order_by="activity_id, record",
         )
     finally:
         conn.close()
 
 
-def _read_sleep(db_path: Path) -> pd.DataFrame:
+def _read_sleep(db_path: Path, days: Optional[list] = None) -> pd.DataFrame:
     conn = _connect_ro(db_path)
     try:
         if not _table_exists(conn, "sleep"):
             raise ValueError(f"Table 'sleep' not found in {db_path}")
-        return pd.read_sql_query('SELECT * FROM sleep', conn)
+        if days is None:
+            return pd.read_sql_query("SELECT * FROM sleep", conn)
+        iso_days = [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in days]
+        frames = []
+        for chunk in _chunk(iso_days):
+            placeholders = ", ".join("?" for _ in chunk)
+            frames.append(
+                pd.read_sql_query(
+                    f"SELECT * FROM sleep WHERE date(day) IN ({placeholders})",
+                    conn,
+                    params=chunk,
+                )
+            )
+        if not frames:
+            return pd.read_sql_query("SELECT * FROM sleep WHERE 1=0", conn)
+        return pd.concat(frames, ignore_index=True)
     finally:
         conn.close()
 
@@ -293,11 +343,16 @@ def build_sleep(sleep_df: pd.DataFrame) -> pd.DataFrame:
 # Orchestration + preflight
 # =============================================================================
 
-def transform_all(config: dict) -> Dict[str, pd.DataFrame]:
+def transform_all(
+    config: dict, existing_assignments: Optional[dict] = None
+) -> Dict[str, pd.DataFrame]:
     """Read GarminDB SQLite DBs and return clean ``workouts``/``timeseries``/``sleep``.
 
     Performs preflight validation: source DBs exist, required tables present,
     no duplicate generated ``workoutId``, and ``(activity_id, record)`` is unique.
+    ``existing_assignments`` optionally seeds the shared canonical ``workoutId``
+    policy from committed destination assignments (default: none — legacy
+    full-cache behavior).
     """
     db_dir = Path(config["GARMIN_DB_DIR"])
     activities_db = db_dir / ACTIVITIES_DB
@@ -324,12 +379,13 @@ def transform_all(config: dict) -> Dict[str, pd.DataFrame]:
         raise ValueError(
             f"{missing_ids} activities have an unparseable start_time → null workoutId."
         )
-    # workoutId is used as a join key downstream, so it must stay unique. Rather
-    # than fail the whole batch on a rare same-second collision, disambiguate the
-    # later activities with a numeric suffix (activity_id remains the durable PK).
-    workouts = _disambiguate_workout_ids(workouts)
+    # workoutId is a downstream join key, so it must stay unique. Use the shared
+    # canonical assignment policy (optionally seeded from committed destination
+    # assignments) instead of renumbering in isolation.
+    workout_id_map = compute_workout_id_map(workouts, existing_assignments)
+    workouts = workouts.copy()
+    workouts["workoutId"] = workouts["activity_id"].map(workout_id_map)
 
-    workout_id_map = dict(zip(workouts["activity_id"], workouts["workoutId"]))
     timeseries = build_timeseries(records_df, workout_id_map)
     sleep = build_sleep(sleep_df)
 
@@ -345,38 +401,202 @@ def transform_all(config: dict) -> Dict[str, pd.DataFrame]:
     return {"workouts": workouts, "timeseries": timeseries, "sleep": sleep}
 
 
-def _disambiguate_workout_ids(workouts: pd.DataFrame) -> pd.DataFrame:
-    """Ensure ``workoutId`` is unique by suffixing same-second collisions.
+def _empty_typed_frame(columns: list, int_cols: list) -> pd.DataFrame:
+    """Return an empty frame with the canonical columns and integer dtypes."""
+    df = pd.DataFrame({column: pd.Series([], dtype="object") for column in columns})
+    return _cast_int_cols(df, int_cols)
 
-    The first activity keeps the bare ``DD-MM-YYYY_HHMMSS`` id; subsequent
-    activities sharing it (ordered by ``start_time``, ``activity_id``) get
-    ``-2``, ``-3``, … so downstream joins on ``workoutId`` stay correct.
+
+def empty_frames() -> Dict[str, pd.DataFrame]:
+    """Correctly-typed empty ``workouts``/``timeseries``/``sleep`` frames."""
+    return {
+        "workouts": _empty_typed_frame(WORKOUT_COLUMNS, _WORKOUT_INT_COLS),
+        "timeseries": _empty_typed_frame(TIMESERIES_COLUMNS, _TIMESERIES_INT_COLS),
+        "sleep": _empty_typed_frame(SLEEP_COLUMNS, _SLEEP_INT_COLS),
+    }
+
+
+def transform_selected(
+    config: dict,
+    activity_ids: Optional[list] = None,
+    sleep_days: Optional[list] = None,
+    *,
+    assign_workout_ids=None,
+) -> Dict[str, pd.DataFrame]:
+    """Transform only the selected activities and sleep days (delta path).
+
+    Predicates are pushed into the SQLite reads (including ``activity_records``),
+    so unrelated rows are never materialized. An empty activity/sleep selection
+    yields a correctly-typed empty frame *without* requiring the corresponding
+    source database.
+
+    ``workoutId`` is left as the bare ``DD-MM-YYYY_HHMMSS`` base id here; the
+    shared assignment policy must never renumber ids on a subset in isolation.
+    The caller passes ``assign_workout_ids(workouts, timeseries) -> (workouts,
+    timeseries)`` to apply the shared canonical stable-id policy.
     """
-    if not workouts["workoutId"].duplicated().any():
-        return workouts
+    db_dir = Path(config["GARMIN_DB_DIR"])
+    activities_db = db_dir / ACTIVITIES_DB
+    garmin_db = db_dir / GARMIN_DB
 
-    df = workouts.sort_values(["workoutId", "start_time", "activity_id"]).copy()
-    counts: Dict[str, int] = {}
-    new_ids = []
-    collisions = set()
-    for wid in df["workoutId"]:
-        n = counts.get(wid, 0) + 1
-        counts[wid] = n
-        if n == 1:
-            new_ids.append(wid)
-        else:
-            collisions.add(wid)
-            new_ids.append(f"{wid}-{n}")
-    df["workoutId"] = new_ids
+    selected_ids = [str(a) for a in (activity_ids or [])]
+    selected_days = list(sleep_days or [])
+    empty = empty_frames()
+
+    if selected_ids:
+        if not activities_db.exists():
+            raise FileNotFoundError(
+                f"GarminDB activities database not found: {activities_db}"
+            )
+        activities_df = _read_activities(activities_db, selected_ids)
+        records_df = _read_activity_records(activities_db, selected_ids)
+        workouts = build_workout_metadata(activities_df, records_df)
+
+        missing_ids = int(workouts["workoutId"].isna().sum())
+        if missing_ids:
+            raise ValueError(
+                f"{missing_ids} selected activities have an unparseable start_time "
+                "→ null workoutId."
+            )
+
+        workout_id_map = dict(zip(workouts["activity_id"], workouts["workoutId"]))
+        timeseries = build_timeseries(records_df, workout_id_map)
+
+        # Selected timeseries rows must belong to selected metadata.
+        meta_ids = set(workouts["activity_id"])
+        ts_ids = {a for a in timeseries["activity_id"].dropna().tolist()}
+        orphans = ts_ids - meta_ids
+        if orphans:
+            raise ValueError(
+                f"Selected timeseries reference {len(orphans)} activity id(s) "
+                "absent from the selected metadata."
+            )
+        if timeseries.duplicated(subset=["activity_id", "record"]).any():
+            raise ValueError("Duplicate (activity_id, record) rows in selection.")
+    else:
+        workouts = empty["workouts"]
+        timeseries = empty["timeseries"]
+
+    if selected_days:
+        if not garmin_db.exists():
+            raise FileNotFoundError(f"GarminDB main database not found: {garmin_db}")
+        sleep = build_sleep(_read_sleep(garmin_db, selected_days))
+    else:
+        sleep = empty["sleep"]
+
+    if assign_workout_ids is not None:
+        workouts, timeseries = assign_workout_ids(workouts, timeseries)
+
     print(
-        f"  ⚠️  Disambiguated {len(collisions)} same-second workoutId collision(s) "
-        f"with numeric suffixes: {sorted(collisions)}"
+        f"  Selective transform: {len(workouts)} workouts, "
+        f"{len(timeseries)} records, {len(sleep)} sleep nights"
     )
-    return df.reset_index(drop=True)
+    return {"workouts": workouts, "timeseries": timeseries, "sleep": sleep}
+
+
+def merge_existing_assignments(*maps: dict) -> dict:
+    """Merge per-target ``{activity_id: workoutId}`` maps, rejecting conflicts.
+
+    A conflicting prior mapping (the same activity assigned different workoutIds
+    across destinations) is an error rather than something to rewrite. A reverse
+    conflict (two different activities mapped to the same ``workoutId``) is also
+    rejected — that would corrupt the join key.
+    """
+    merged: Dict[str, str] = {}
+    for mapping in maps:
+        for activity_id, workout_id in (mapping or {}).items():
+            key = str(activity_id)
+            if key in merged and merged[key] != workout_id:
+                raise ValueError(
+                    f"Conflicting workoutId assignment for activity {key}: "
+                    f"{merged[key]!r} vs {workout_id!r}."
+                )
+            merged[key] = workout_id
+    owner: Dict[str, str] = {}
+    for activity_id, workout_id in merged.items():
+        if workout_id in owner and owner[workout_id] != activity_id:
+            raise ValueError(
+                f"workoutId {workout_id!r} is assigned to multiple activities: "
+                f"{owner[workout_id]!r} and {activity_id!r}."
+            )
+        owner[workout_id] = activity_id
+    return merged
+
+
+def compute_workout_id_map(
+    workouts: pd.DataFrame, existing_assignments: Optional[dict] = None
+) -> Dict[str, str]:
+    """Return a stable ``{activity_id: workoutId}`` map for ``workouts``.
+
+    Committed assignments in ``existing_assignments`` are preserved verbatim
+    (never renumbered) and their ids are reserved. New activities take their
+    bare ``DD-MM-YYYY_HHMMSS`` base id, or the next unused ``-N`` suffix when a
+    base/suffix is already reserved. Ordering by ``start_time`` then
+    ``activity_id`` makes new suffix allocation deterministic.
+    """
+    existing = {str(k): v for k, v in (existing_assignments or {}).items()}
+    reserved = set(existing.values())
+    base_by_aid = {
+        str(a): w for a, w in zip(workouts["activity_id"], workouts["workoutId"])
+    }
+
+    ordered = workouts.sort_values(["start_time", "activity_id"], kind="stable")
+    final: Dict[str, str] = {}
+    collisions = 0
+    for activity_id in ordered["activity_id"].astype(str):
+        if activity_id in existing:
+            final[activity_id] = existing[activity_id]
+            continue
+        base = base_by_aid[activity_id]
+        if base is None or (isinstance(base, float) and pd.isna(base)):
+            raise ValueError(
+                f"Activity {activity_id} has a null base workoutId (unparseable "
+                "start_time)."
+            )
+        candidate = base
+        if candidate in reserved:
+            suffix = 2
+            while f"{base}-{suffix}" in reserved:
+                suffix += 1
+            candidate = f"{base}-{suffix}"
+            collisions += 1
+        reserved.add(candidate)
+        final[activity_id] = candidate
+
+    if collisions:
+        print(
+            f"  ⚠️  Assigned {collisions} same-second workoutId suffix(es) "
+            "without renumbering existing activities"
+        )
+    return final
+
+
+def assign_workout_ids(
+    workouts: pd.DataFrame,
+    timeseries: pd.DataFrame,
+    existing_assignments: Optional[dict] = None,
+):
+    """Apply the shared canonical ``workoutId`` policy to both frames.
+
+    Suitable as the ``assign_workout_ids`` hook of :func:`transform_selected`
+    (bind ``existing_assignments`` with ``functools.partial``).
+    """
+    final = compute_workout_id_map(workouts, existing_assignments)
+    workouts = workouts.copy()
+    workouts["workoutId"] = workouts["activity_id"].astype(str).map(final)
+    if timeseries is not None and not timeseries.empty:
+        timeseries = timeseries.copy()
+        timeseries["workoutId"] = timeseries["activity_id"].astype(str).map(final)
+    return workouts, timeseries
 
 
 __all__ = [
     "transform_all",
+    "transform_selected",
+    "empty_frames",
+    "compute_workout_id_map",
+    "assign_workout_ids",
+    "merge_existing_assignments",
     "build_workout_metadata",
     "build_timeseries",
     "build_sleep",

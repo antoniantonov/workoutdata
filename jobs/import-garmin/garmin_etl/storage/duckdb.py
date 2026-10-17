@@ -12,7 +12,7 @@ Tables use **explicit DDL**. Imports are idempotent via delete-by-id upsert.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 import duckdb  # type: ignore
 import pandas as pd  # type: ignore
@@ -89,6 +89,32 @@ def _connect(config: dict) -> duckdb.DuckDBPyConnection:
     return duckdb.connect(str(db_path))
 
 
+def _connect_ro(config: dict) -> Optional[duckdb.DuckDBPyConnection]:
+    """Open the DuckDB file **read-only** for destination discovery.
+
+    Returns ``None`` when the file does not exist yet (a genuinely empty new
+    destination). A file that exists but is locked, corrupt, or otherwise
+    unreadable raises, so discovery aborts rather than silently reporting an
+    empty inventory (which would trigger a mass re-download).
+    """
+    db_path = Path(config["GARMIN_DUCKDB_PATH"])
+    if not db_path.exists():
+        return None
+    return duckdb.connect(str(db_path), read_only=True)
+
+
+def _table_missing(con: duckdb.DuckDBPyConnection, table: str) -> bool:
+    row = con.execute(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = ?", [table]
+    ).fetchone()
+    return row is None
+
+
+def _chunked(values: list, size: int = 900):
+    for start in range(0, len(values), size):
+        yield values[start:start + size]
+
+
 def ensure_tables(config: dict) -> None:
     """Create the Garmin tables if they do not already exist."""
     con = _connect(config)
@@ -100,22 +126,52 @@ def ensure_tables(config: dict) -> None:
         con.close()
 
 
+def _assert_timeseries_within_metadata(workouts_df: pd.DataFrame, timeseries_df: pd.DataFrame) -> None:
+    """Reject timeseries rows whose activity_id is absent from the metadata."""
+    if timeseries_df.empty:
+        return
+    meta_ids = {str(a) for a in workouts_df["activity_id"].tolist()}
+    ts_ids = {str(a) for a in timeseries_df["activity_id"].dropna().tolist()}
+    orphans = ts_ids - meta_ids
+    if orphans:
+        raise ValueError(
+            f"Refusing to write {len(orphans)} timeseries activity id(s) not "
+            "present in the supplied workout metadata."
+        )
+
+
 def import_workouts(
     workouts_df: pd.DataFrame, timeseries_df: pd.DataFrame, config: dict
 ) -> dict:
-    """Upsert workout metadata + per-second timeseries (idempotent by activity_id)."""
+    """Upsert selected workout metadata + timeseries (delta-safe, idempotent).
+
+    Timeseries are replaced by the **selected workout-metadata ids**, so a
+    selected zero-sample activity still clears its old records. An empty delta
+    performs no DELETE/INSERT (the tables are still ensured for a new file).
+    """
+    _assert_timeseries_within_metadata(workouts_df, timeseries_df)
     con = _connect(config)
     try:
         con.execute(WORKOUT_METADATA_DDL)
         con.execute(TIMESERIES_DDL)
+
+        if workouts_df.empty and timeseries_df.empty:
+            meta_count = con.execute("SELECT COUNT(*) FROM garmin_workout_metadata").fetchone()[0]
+            ts_count = con.execute("SELECT COUNT(*) FROM garmin_timeseries").fetchone()[0]
+            print("  ℹ️  DuckDB workouts: empty delta — no rows changed")
+            return {"workouts": meta_count, "timeseries": ts_count}
+
         con.register("workouts_view", workouts_df)
         con.register("timeseries_view", timeseries_df)
 
         con.execute("BEGIN TRANSACTION")
         try:
+            # Delete timeseries by the SELECTED METADATA ids (not by ids present
+            # in the incoming timeseries frame) so a zero-sample replacement
+            # cannot leave old records behind.
             con.execute(
                 "DELETE FROM garmin_timeseries WHERE activity_id IN "
-                "(SELECT DISTINCT activity_id FROM timeseries_view)"
+                "(SELECT activity_id FROM workouts_view)"
             )
             con.execute(
                 "DELETE FROM garmin_workout_metadata WHERE activity_id IN "
@@ -180,17 +236,98 @@ def import_sleep(sleep_df: pd.DataFrame, config: dict) -> dict:
 # Query helpers
 # =============================================================================
 
-def get_existing_activity_ids(config: dict) -> set:
-    """Return the set of activity_ids already present in workout metadata."""
-    con = _connect(config)
-    try:
-        exists = con.execute(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = 'garmin_workout_metadata'"
-        ).fetchone()
-        if not exists:
+def get_existing_activity_ids(config: dict, candidate_ids: Optional[Iterable[str]] = None) -> set:
+    """Return committed ``activity_id`` values (read-only).
+
+    ``candidate_ids=None`` returns every stored id (backwards-compatible "all").
+    An **empty** collection returns an empty set — it means *none*, never "all".
+    A non-empty collection is matched with chunked, parameterized ``IN`` queries.
+    """
+    if candidate_ids is not None:
+        candidates = [str(c) for c in candidate_ids]
+        if not candidates:
             return set()
-        rows = con.execute("SELECT activity_id FROM garmin_workout_metadata").fetchall()
+    else:
+        candidates = None
+
+    con = _connect_ro(config)
+    if con is None:
+        return set()
+    try:
+        if _table_missing(con, "garmin_workout_metadata"):
+            return set()
+        if candidates is None:
+            rows = con.execute(
+                "SELECT activity_id FROM garmin_workout_metadata"
+            ).fetchall()
+            return {r[0] for r in rows}
+        found: set = set()
+        for chunk in _chunked(candidates):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = con.execute(
+                "SELECT activity_id FROM garmin_workout_metadata "
+                f"WHERE activity_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            found.update(r[0] for r in rows)
+        return found
+    finally:
+        con.close()
+
+
+def get_existing_sleep_days(config: dict, start_day, end_day) -> set:
+    """Return committed sleep ``day`` values within ``[start_day, end_day]`` (read-only)."""
+    con = _connect_ro(config)
+    if con is None:
+        return set()
+    try:
+        if _table_missing(con, "garmin_sleep"):
+            return set()
+        rows = con.execute(
+            "SELECT day FROM garmin_sleep WHERE day BETWEEN ? AND ?",
+            [start_day, end_day],
+        ).fetchall()
         return {r[0] for r in rows}
+    finally:
+        con.close()
+
+
+def get_workout_id_assignments(
+    config: dict, activity_ids: Optional[Iterable[str]] = None
+) -> dict:
+    """Return the committed ``{activity_id: workoutId}`` mapping (read-only).
+
+    ``activity_ids=None`` returns every assignment; an empty collection returns
+    an empty mapping.
+    """
+    if activity_ids is not None:
+        wanted = [str(a) for a in activity_ids]
+        if not wanted:
+            return {}
+    else:
+        wanted = None
+
+    con = _connect_ro(config)
+    if con is None:
+        return {}
+    try:
+        if _table_missing(con, "garmin_workout_metadata"):
+            return {}
+        if wanted is None:
+            rows = con.execute(
+                "SELECT activity_id, workoutId FROM garmin_workout_metadata"
+            ).fetchall()
+            return {r[0]: r[1] for r in rows}
+        assignments: dict = {}
+        for chunk in _chunked(wanted):
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = con.execute(
+                "SELECT activity_id, workoutId FROM garmin_workout_metadata "
+                f"WHERE activity_id IN ({placeholders})",
+                chunk,
+            ).fetchall()
+            assignments.update({r[0]: r[1] for r in rows})
+        return assignments
     finally:
         con.close()
 
@@ -258,6 +395,8 @@ __all__ = [
     "import_workouts",
     "import_sleep",
     "get_existing_activity_ids",
+    "get_existing_sleep_days",
+    "get_workout_id_assignments",
     "get_garmin_workout_metadata",
     "get_garmin_timeseries",
     "get_garmin_sleep",

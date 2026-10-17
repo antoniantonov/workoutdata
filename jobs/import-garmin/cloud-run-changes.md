@@ -18,6 +18,37 @@ CI/CD logs, or this document.
 
 ---
 
+## 0. Update — destination-aware delta is now the default
+
+Since this handoff was first written, `run_import.sh` defaults to a
+**destination-aware delta sync** (`GARMIN_IMPORT_MODE=delta`): it discovers
+Garmin data in a look-back window (`--look-back-days`, default 30), compares it
+with the selected destination(s), and downloads/imports only missing keys via
+the `sync-garmin` Compose service (entrypoint `python -m garmin_etl.sync`). This
+changes the scheduling story below in three ways:
+
+- **A scheduled run should invoke the delta coordinator**, not the legacy
+  full-refresh containers. In a cloud task, run `python -m garmin_etl.sync` (or
+  `main.py` with `GARMIN_IMPORT_MODE=delta` and `GARMIN_DOWNLOAD=true`) with
+  `GARMIN_SYNC_BACKENDS` and `GARMIN_LOOK_BACK_DAYS` set. It is idempotent: a
+  repeat run with no new data performs no destination writes.
+- **Overlapping windows give eventual recovery** for late uploads, so a
+  cron/EventBridge/Container-Apps schedule that runs more often than the window
+  is self-healing. The legacy count-based path (`--latest`/`--full-download`/
+  `--skip-download`) remains available for one-off backfills.
+- **Limitations to document for operators:** delta mode is missing-key only (no
+  edit/CDC detection); sleep candidate dates are probed once per run (empty/
+  provisional nights stay retryable); the Garmin date-filter/sleep endpoints are
+  community-observed and covered by an opt-in live smoke test. A shared job lock
+  (filesystem + PostgreSQL advisory lock) serializes concurrent runs; ensure the
+  scheduler does not fan out overlapping executions against the same cache.
+
+The verified-behavior sections below predate this feature; treat the delta
+coordinator as the primary online path and the legacy download+full-import as
+the explicit fallback.
+
+---
+
 ## 1. Current behavior (verified from source, 2026-08-28)
 
 ### 1.1 Source data: GarminDB SQLite

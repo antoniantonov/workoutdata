@@ -92,6 +92,33 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
       POSTGRES_SSLMODE: disable
 
+  # Destination-aware delta coordinator (default import path). Downloads and
+  # imports only the data the selected backend(s) are missing in the look-back
+  # window. The launcher manages database readiness and passes the selected
+  # backends/window/validate flag via -e, so this service intentionally has no
+  # unconditional PostgreSQL dependency (DuckDB-only runs never touch it).
+  sync-garmin:
+    <<: *import-service
+    profiles: ["sync"]
+    environment:
+      <<: *import-environment
+      DATABASE_TYPE: duckdb
+      GARMIN_DOWNLOAD: "false"
+      GARMIN_IMPORT_MODE: delta
+      POSTGRES_CONNECTION_STRING: ""
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DATABASE: ${POSTGRES_DATABASE:-garmin}
+      POSTGRES_USER: ${POSTGRES_USER:-garmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-garmin-local-only}
+      POSTGRES_SSLMODE: disable
+    entrypoint:
+      - uv
+      - run
+      - python
+      - -m
+      - garmin_etl.sync
+
   query-duckdb:
     <<: *import-service
     profiles: ["tools"]
